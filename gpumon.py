@@ -44,7 +44,7 @@ INSTANCE_AZ = urllib2.urlopen(BASE_URL + 'placement/availability-zone').read().d
 EC2_REGION = INSTANCE_AZ[:-1]
 
 TIMESTAMP = datetime.now().strftime('%Y-%m-%dT%H')
-TMP_FILE = '/tmp/GPU_TEMP'
+TMP_FILE = 'GPU_TEMP_'
 TMP_FILE_SAVED = TMP_FILE + TIMESTAMP
 
 # Create CloudWatch client
