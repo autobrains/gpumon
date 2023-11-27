@@ -102,7 +102,7 @@ def getUtilization(handle):
 def logResults(team, i, util, gpu_util, mem_util, powDrawStr, temp):
     try:
         gpu_logs = open(TMP_FILE_SAVED, 'a+')
-        writeString = str(i) + ',' + gpu_util + ',' + mem_util + ',' + powDrawStr + ',' + temp + '\n'
+        writeString = 'tag:' + team + ',' + str(i) + ',' + gpu_util + ',' + mem_util + ',' + powDrawStr + ',' + temp + '\n'
         #print(writeString)
         gpu_logs.write(writeString)
     except:
@@ -129,7 +129,7 @@ def logResults(team, i, util, gpu_util, mem_util, powDrawStr, temp):
                     },
                     {
                         'Name': 'InstanceTag',
-                        'Value': team
+                        'Value': str(team)
                     }
 
                 ]
@@ -174,13 +174,9 @@ deviceCount = nvmlDeviceGetCount()
 def main():
     try:
         while True:
-            instances = ec2.describe_instances()['Reservations']
-            for r in instances:
-                for i in r['Instances']:
-                    instance_id = i['InstanceId']
-                    tags = get_instance_tags(instance_id)
-                    if 'Team' in tags:
-                        team = tags['Team']
+            tags = get_instance_tags(INSTANCE_ID)
+                if 'Team' in tags:
+                    team = str(tags['Team'])
             PUSH_TO_CW = True
             # Find the metrics for each GPU on instance
             for i in range(deviceCount):
