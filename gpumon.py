@@ -175,8 +175,8 @@ def main():
     try:
         while True:
             tags = get_instance_tags(INSTANCE_ID)
-                if 'Team' in tags:
-                    team = str(tags['Team'])
+            if 'Team' in tags:
+                team = str(tags['Team'])
             PUSH_TO_CW = True
             # Find the metrics for each GPU on instance
             for i in range(deviceCount):
