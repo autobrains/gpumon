@@ -181,8 +181,12 @@ def main():
             tags = get_instance_tags(INSTANCE_ID)
             if 'Team' in tags:
                 team = str(tags['Team'])
+            else:
+                team = "NO_TAG"
             if 'Employee' in tags:
                 emp_name = str(tags['Employee'])
+            else:
+                emp_name = "NO_TAG"
             PUSH_TO_CW = True
             # Find the metrics for each GPU on instance
             for i in range(deviceCount):
