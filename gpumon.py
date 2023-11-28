@@ -102,7 +102,7 @@ def getUtilization(handle):
 def logResults(team, i, util, gpu_util, mem_util, powDrawStr, temp):
     try:
         gpu_logs = open(TMP_FILE_SAVED, 'a+')
-        writeString = 'tag:' + team + ',' + str(i) + ',' + gpu_util + ',' + mem_util + ',' + powDrawStr + ',' + temp + '\n'
+        writeString = 'tag:' + team + ',' + 'Employee:' + emp_name + ',' + str(i) + ',' + gpu_util + ',' + mem_util + ',' + powDrawStr + ',' + temp + '\n'
         #print(writeString)
         gpu_logs.write(writeString)
     except:
@@ -130,6 +130,10 @@ def logResults(team, i, util, gpu_util, mem_util, powDrawStr, temp):
                     {
                         'Name': 'InstanceTag',
                         'Value': str(team)
+                    },
+                    {
+                        'Name': 'EmployeeTag',
+                        'Value': str(emp_name)
                     }
 
                 ]
@@ -177,6 +181,8 @@ def main():
             tags = get_instance_tags(INSTANCE_ID)
             if 'Team' in tags:
                 team = str(tags['Team'])
+            if 'Employee' in tags:
+                emp_name = str(tags['Employee'])
             PUSH_TO_CW = True
             # Find the metrics for each GPU on instance
             for i in range(deviceCount):
@@ -185,7 +191,7 @@ def main():
                 powDrawStr = getPowerDraw(handle)
                 temp = getTemp(handle)
                 util, gpu_util, mem_util = getUtilization(handle)
-                logResults(team, i, util, gpu_util, mem_util, powDrawStr, temp)
+                logResults(team, emp_name, i, util, gpu_util, mem_util, powDrawStr, temp)
 
             sleep(sleep_interval)
 
