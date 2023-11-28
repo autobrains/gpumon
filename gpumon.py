@@ -99,7 +99,7 @@ def getUtilization(handle):
         PUSH_TO_CW = False
     return util, gpu_util, mem_util
 
-def logResults(team, i, util, gpu_util, mem_util, powDrawStr, temp):
+def logResults(team, emp_name, i, util, gpu_util, mem_util, powDrawStr, temp):
     try:
         gpu_logs = open(TMP_FILE_SAVED, 'a+')
         writeString = 'tag:' + team + ',' + 'Employee:' + emp_name + ',' + str(i) + ',' + gpu_util + ',' + mem_util + ',' + powDrawStr + ',' + temp + '\n'
