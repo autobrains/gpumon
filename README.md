@@ -42,3 +42,9 @@ systemctl start gpumon
 systemctl enable gpumon
 systemctl status gpumon
 ```
+
+To update the instance with a new version of code after merge to master use `update_remote.sh`
+
+Syntax: 
+
+`update_remote.sh <ip_of_the_ec2_instance> <path_to_ssh_key>`
