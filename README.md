@@ -14,7 +14,8 @@
 Some changes to script have been made by Paul Seifer to adapt to python3.9, such as conversion of values to utf-8 strings.
 
 To install the script on an EC2 instance that has GPUs, please follow the steps:
-```apt update -y && apt install curl -y && apt install python3-pip -y && pip install boto3 && pip install pynvml
+```
+apt update -y && apt install curl -y && apt install python3-pip -y && pip install boto3 && pip install pynvml && pip install psutil
 git clone https://github.com/autobrains/gpumon.git
 rm -f /etc/systemd/system/gpumon.service
 touch /etc/systemd/system/gpumon.service
