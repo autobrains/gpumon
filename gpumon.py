@@ -227,6 +227,7 @@ def main():
     try:
         while True:
             total_gpu_util = 0
+            cpu_util_tripped = False
             try:
                 # Get per-core CPU utilization
                 per_core_utilization = get_per_core_cpu_utilization()

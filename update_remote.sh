@@ -31,3 +31,5 @@ echo "SCRIPT ACTIVATION FAILED:${error}"
 exit 1
 fi
 echo "We are done, instance:${instance_ip} updated with new version of gpumon.py"
+tmpath=$(ssh -i ${key_path} ubuntu@${instance_ip} sudo ls -lit /tmp | grep GPU_TEMP | head -1 | rev | awk '{print $1}' | rev)
+ssh -i ${key_path} ubuntu@${instance_ip} sudo tail -f /tmp/${tmpath}
