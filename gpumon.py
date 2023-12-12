@@ -274,6 +274,7 @@ def main():
             
             #print(f'Average GPU utilization:',average_gpu_util)
             if round(float(average_gpu_util)) <= 10 and cpu_util_tripped == False:    
+            #cpu util tripped == True means that there was higher than threshold cpu core activity and we cant stop the instance because of it
                 if alarm_pilot_light == 0:
                     #print(f'CPU or GPU below {THRESHOLD_PERCENTAGE}% threshold, turning pilot light ON')
                     alarm_pilot_light = 1
