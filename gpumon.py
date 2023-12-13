@@ -19,7 +19,7 @@ import boto3
 from pynvml import *
 from datetime import datetime, timedelta
 from time import sleep
-
+import time
 # Constants
 CACHE_DURATION = 300  # 5 minutes in seconds
 THRESHOLD_PERCENTAGE = 10  # Threshold for average core utilization
@@ -27,6 +27,9 @@ THRESHOLD_PERCENTAGE = 10  # Threshold for average core utilization
 # Variables
 core_utilization_cache = [[] for _ in range(psutil.cpu_count())]  # List to store utilization data for each core
 cpu_util_tripped = 0
+
+def seconds_elapsed():
+    return time.time() - psutil.boot_time()
 
 def get_per_core_cpu_utilization():
     return psutil.cpu_percent(interval=1, percpu=True)
@@ -114,10 +117,10 @@ def getUtilization(handle):
         PUSH_TO_CW = False
     return util, gpu_util, mem_util
 
-def logResults(team, emp_name, i, util, gpu_util, mem_util, powDrawStr, temp, average_gpu_util,alarm_pilot_light,cpu_util_tripped):
+def logResults(team, emp_name, i, util, gpu_util, mem_util, powDrawStr, temp, average_gpu_util,alarm_pilot_light,cpu_util_tripped,seconds):
     try:
         gpu_logs = open(TMP_FILE_SAVED, 'a+')
-        writeString = 'tag:' + team + ',' + 'Employee:' + emp_name + ',' + 'GPU_ID:' + str(i) + ',' + 'GPU_Util:' + gpu_util + ',' + 'MemUtil:' + mem_util + ',' + 'powDrawStr:' + powDrawStr + ',' + 'Temp:' + temp + ',' + 'AverageGPUUtil:' + str(average_gpu_util) + ',' + 'Alarm_Pilot_value:' + str(alarm_pilot_light) + ',' + 'CPU_Util_Tripped:' + str(cpu_util_tripped) + '\n'
+        writeString = 'tag:' + team + ',' + 'Employee:' + emp_name + ',' + 'GPU_ID:' + str(i) + ',' + 'GPU_Util:' + gpu_util + ',' + 'MemUtil:' + mem_util + ',' + 'powDrawStr:' + powDrawStr + ',' + 'Temp:' + temp + ',' + 'AverageGPUUtil:' + str(average_gpu_util) + ',' + 'Alarm_Pilot_value:' + str(alarm_pilot_light) + ',' + 'CPU_Util_Tripped:' + str(cpu_util_tripped) + ',' + 'Seconds Elapsed since reboot:' + str(seconds) + '\n'
         #print(writeString)
         #writeString = 'tag:' + team + ',' + 'Employee:' + emp_name + ',' + str(i) + ',' + gpu_util + ',' + mem_util + ',' + powDrawStr + ',' + temp + '\n'
         gpu_logs.write(writeString)
@@ -273,20 +276,25 @@ def main():
             average_gpu_util = total_gpu_util / deviceCount
             
             #print(f'Average GPU utilization:',average_gpu_util)
-            if round(float(average_gpu_util)) <= 10 and cpu_util_tripped == False:    
+            seconds = round(float(seconds_elapsed()))
+            #print('seconds:',seconds)
+            if seconds >= 7200:
+                if round(float(average_gpu_util)) <= 10 and cpu_util_tripped == False:    
             #cpu util tripped == True means that there was higher than threshold cpu core activity and we cant stop the instance because of it
-                if alarm_pilot_light == 0:
-                    #print(f'CPU or GPU below {THRESHOLD_PERCENTAGE}% threshold, turning pilot light ON')
-                    alarm_pilot_light = 1
-            else:
-                if alarm_pilot_light == 1:
-                    alarm_pilot_light = 0
+                    if alarm_pilot_light == 0:
+                        #print(f'CPU or GPU below {THRESHOLD_PERCENTAGE}% threshold, turning pilot light ON')
+                        alarm_pilot_light = 1
+                else:
+                    if alarm_pilot_light == 1:
+                        alarm_pilot_light = 0
                     #print(f'CPU or GPU above {THRESHOLD_PERCENTAGE}% threshold, turning pilot light OFF')
-            
+            else:
+                alarm_pilot_light = 0
+
             # Log the results
             for i in range(deviceCount):
                 handle = nvmlDeviceGetHandleByIndex(i)
-                logResults(team, emp_name, i, util, gpu_util, mem_util, powDrawStr, temp, average_gpu_util, alarm_pilot_light,cpu_util_tripped)
+                logResults(team, emp_name, i, util, gpu_util, mem_util, powDrawStr, temp, average_gpu_util, alarm_pilot_light, cpu_util_tripped, seconds)
             
             sleep(sleep_interval)
     finally:
