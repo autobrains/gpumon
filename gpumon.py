@@ -117,10 +117,10 @@ def getUtilization(handle):
         PUSH_TO_CW = False
     return util, gpu_util, mem_util
 
-def logResults(team, emp_name, i, util, gpu_util, mem_util, powDrawStr, temp, average_gpu_util,alarm_pilot_light,cpu_util_tripped,seconds):
+def logResults(team, emp_name, i, util, gpu_util, mem_util, powDrawStr, temp, average_gpu_util,alarm_pilot_light,cpu_util_tripped,seconds,current_time,per_core_utilization):
     try:
         gpu_logs = open(TMP_FILE_SAVED, 'a+')
-        writeString = 'tag:' + team + ',' + 'Employee:' + emp_name + ',' + 'GPU_ID:' + str(i) + ',' + 'GPU_Util:' + gpu_util + ',' + 'MemUtil:' + mem_util + ',' + 'powDrawStr:' + powDrawStr + ',' + 'Temp:' + temp + ',' + 'AverageGPUUtil:' + str(average_gpu_util) + ',' + 'Alarm_Pilot_value:' + str(alarm_pilot_light) + ',' + 'CPU_Util_Tripped:' + str(cpu_util_tripped) + ',' + 'Seconds Elapsed since reboot:' + str(seconds) + '\n'
+        writeString = '[ ' + str(current_time) + ' ] ' + 'tag:' + team + ',' + 'Employee:' + emp_name + ',' + 'GPU_ID:' + str(i) + ',' + 'GPU_Util:' + gpu_util + ',' + 'MemUtil:' + mem_util + ',' + 'powDrawStr:' + powDrawStr + ',' + 'Temp:' + temp + ',' + 'AverageGPUUtil:' + str(average_gpu_util) + ',' + 'Alarm_Pilot_value:' + str(alarm_pilot_light) + ',' + 'CPU_Util_Tripped:' + str(cpu_util_tripped) + ',' + 'Seconds Elapsed since reboot:' + str(seconds) + ',' + 'Per-Core CPU Util:' + str(per_core_utilization) + '\n'
         #print(writeString)
         #writeString = 'tag:' + team + ',' + 'Employee:' + emp_name + ',' + str(i) + ',' + gpu_util + ',' + mem_util + ',' + powDrawStr + ',' + temp + '\n'
         gpu_logs.write(writeString)
@@ -154,14 +154,6 @@ def logResults(team, emp_name, i, util, gpu_util, mem_util, powDrawStr, temp, av
                         'Name': 'EmployeeTag',
                         'Value': str(emp_name)
                     }
-                 #   {
-                 #       'Name': 'Average GPU Utilization',
-                 #       'Value': str(average_gpu_util)
-                 #   }
-                 #   {
-                 #       'Name': 'Alarm_pilot_light',
-                 #       'Value': str(alarm_pilot_light)
-                 #   }
 
                 ]
         cloudwatch.put_metric_data(
@@ -294,7 +286,7 @@ def main():
             # Log the results
             for i in range(deviceCount):
                 handle = nvmlDeviceGetHandleByIndex(i)
-                logResults(team, emp_name, i, util, gpu_util, mem_util, powDrawStr, temp, average_gpu_util, alarm_pilot_light, cpu_util_tripped, seconds)
+                logResults(team, emp_name, i, util, gpu_util, mem_util, powDrawStr, temp, average_gpu_util, alarm_pilot_light, cpu_util_tripped, seconds,current_time,per_core_utilization)
             
             sleep(sleep_interval)
     finally:
