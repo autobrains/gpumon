@@ -24,6 +24,7 @@ if [ "${error}" != "0" ]; then
 	exit 1
 fi
 echo "Moving file done, moving on to running the script on instance"
+ssh -i ${key_path} ubuntu@${instance_ip} sudo git clone https://github.com/autobrains/gpumon.git /root/gpumon
 ssh -i ${key_path} ubuntu@${instance_ip} sudo bash /root/update_gpumon.sh
 error=$?
 if [ "${error}" != "0" ]; then

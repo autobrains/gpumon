@@ -20,6 +20,8 @@ from pynvml import *
 from datetime import datetime, timedelta
 from time import sleep
 import time
+import requests
+
 # Constants
 CACHE_DURATION = 300  # 5 minutes in seconds
 THRESHOLD_PERCENTAGE = 10  # Threshold for average core utilization
@@ -59,6 +61,8 @@ INSTANCE_TYPE = urllib2.urlopen(BASE_URL + 'instance-type').read().decode("utf-8
 
 INSTANCE_AZ = urllib2.urlopen(BASE_URL + 'placement/availability-zone').read().decode("utf-8") 
 
+HOSTNAME = urllib2.urlopen(BASE_URL + 'hostname').read().decode("utf-8")
+
 EC2_REGION = INSTANCE_AZ[:-1]
 
 TIMESTAMP = datetime.now().strftime('%Y-%m-%dT%H')
@@ -69,6 +73,55 @@ ec2 = boto3.client('ec2', region_name=EC2_REGION)
 # Create CloudWatch client
 cloudwatch = boto3.client('cloudwatch', region_name=EC2_REGION)
 
+def get_network_stats(instance_id):
+    # Set the end time to the current time
+    end = datetime.utcnow()
+    # Set the start time to 5 minutes ago
+    start = end - timedelta(minutes=5)
+    # Format the time strings
+    start_str = start.strftime("%Y-%m-%dT%H:%M:%SZ")
+    end_str = end.strftime("%Y-%m-%dT%H:%M:%SZ")
+    #print("From:",start_str,"Till:",end_str,"instance:",instance_id)
+    data_in = cloudwatch.get_metric_statistics(
+        Period=60,
+        StartTime=start_str,
+        EndTime=end_str,
+        MetricName="NetworkPacketsIn",
+        Namespace="AWS/EC2",
+        Statistics=["Maximum"],
+        Unit="Count",
+        Dimensions=[{'Name': 'InstanceId', 'Value': str(instance_id)}]
+    )
+    #print("data_in:",data_in)
+    data_out = cloudwatch.get_metric_statistics(
+        Period=60,
+        StartTime=start_str,
+        EndTime=end_str,
+        MetricName="NetworkPacketsOut",
+        Namespace="AWS/EC2",
+        Statistics=["Maximum"],
+        Unit="Count",
+        Dimensions=[{'Name': 'InstanceId', 'Value': str(instance_id)}]
+    )
+    datapoints_in = data_in.get("Datapoints", [])
+    #print("datapoints_in:",datapoints_in)
+    datapoints_out = data_out.get("Datapoints",[])
+    first_datapoint_in = 10000 #we dont want to switch off instance if we werent able to bring metrics in
+    first_datapoint_out = 10000
+    if datapoints_in:
+        # Access the first data point (assuming there is at least one)
+        first_datapoint_in = datapoints_in[0]["Maximum"]
+        #print(f"packetsin:{round(first_datapoint_in)}")
+    else:
+        print("No data points found.")
+    if datapoints_out:
+        # Access the first data point (assuming there is at least one)
+        first_datapoint_out = datapoints_out[0]["Maximum"]
+        #print(f"packetsout:{round(first_datapoint_out)}")
+    else:
+        print("No data points found.")
+    network_sum = round(first_datapoint_in) + round(first_datapoint_out)
+    return network_sum
 
 # Flag to push to CloudWatch
 PUSH_TO_CW = True
@@ -87,6 +140,18 @@ def get_instance_tags(instance_id):
     except ClientError:
         print(f"Couldn't get tags for instance {instance_id}")
         raise
+def send_slack(webhook_url,message):
+    message=f"{message}"   
+    payload = {
+        "text": message
+    }
+
+    response = requests.post(webhook_url, json=payload)
+
+    if response.status_code == 200:
+        print("Message sent to Slack successfully.")
+    else:
+        print(f"Failed to send message to Slack. Status code: {response.status_code}")
 
 def getPowerDraw(handle):
     try:
@@ -117,10 +182,10 @@ def getUtilization(handle):
         PUSH_TO_CW = False
     return util, gpu_util, mem_util
 
-def logResults(team, emp_name, i, util, gpu_util, mem_util, powDrawStr, temp, average_gpu_util,alarm_pilot_light,cpu_util_tripped,seconds,current_time,per_core_utilization):
+def logResults(team, emp_name, i, util, gpu_util, mem_util, powDrawStr, temp, average_gpu_util,alarm_pilot_light,cpu_util_tripped,seconds,current_time,per_core_utilization,network):
     try:
         gpu_logs = open(TMP_FILE_SAVED, 'a+')
-        writeString = '[ ' + str(current_time) + ' ] ' + 'tag:' + team + ',' + 'Employee:' + emp_name + ',' + 'GPU_ID:' + str(i) + ',' + 'GPU_Util:' + gpu_util + ',' + 'MemUtil:' + mem_util + ',' + 'powDrawStr:' + powDrawStr + ',' + 'Temp:' + temp + ',' + 'AverageGPUUtil:' + str(average_gpu_util) + ',' + 'Alarm_Pilot_value:' + str(alarm_pilot_light) + ',' + 'CPU_Util_Tripped:' + str(cpu_util_tripped) + ',' + 'Seconds Elapsed since reboot:' + str(seconds) + ',' + 'Per-Core CPU Util:' + str(per_core_utilization) + '\n'
+        writeString = '[ ' + str(current_time) + ' ] ' + 'tag:' + team + ',' + 'Employee:' + emp_name + ',' + 'GPU_ID:' + str(i) + ',' + 'GPU_Util:' + gpu_util + ',' + 'MemUtil:' + mem_util + ',' + 'powDrawStr:' + powDrawStr + ',' + 'Temp:' + temp + ',' + 'AverageGPUUtil:' + str(average_gpu_util) + ',' + 'Alarm_Pilot_value:' + str(alarm_pilot_light) + ',' + 'CPU_Util_Tripped:' + str(cpu_util_tripped) + ',' + 'Seconds Elapsed since reboot:' + str(seconds) + ',' + 'Per-Core CPU Util:' + str(per_core_utilization) + ',' + 'NetworkStats:' + str(network) + '\n'
         #print(writeString)
         #writeString = 'tag:' + team + ',' + 'Employee:' + emp_name + ',' + str(i) + ',' + gpu_util + ',' + mem_util + ',' + powDrawStr + ',' + temp + '\n'
         gpu_logs.write(writeString)
@@ -234,7 +299,6 @@ def main():
                 # Remove outdated data from the cache
                 current_time = datetime.now()
                 core_utilization_cache = [core_data[-int(CACHE_DURATION / 1):] for core_data in core_utilization_cache]
-
                 # Calculate average core utilization
                 average_core_utilization = calculate_average_core_utilization()
                 #print(average_core_utilization)
@@ -255,6 +319,20 @@ def main():
             else:
                 emp_name = "NO_TAG"
             PUSH_TO_CW = True
+            debug_webhook = os.getenv("DEBUG_WEBHOOK_URL")
+            team_var = str(team) + "_TEAM_WEBHOOK_URL"
+            #print("team_var:",team_var)
+            try:
+                team_webhook = os.getenv(team_var)
+            except:
+                try:
+                    send_slack(debug_webhook,f"achtung, could not resolve team_webhook_url on {INSTANCE_ID} - {team_var}")
+                    team_webhook = debug_webhook
+                except:
+                    print(f"AAAARGH! DEBUG WEBHOOK is None:${DEBUG_WEBHOOK_URL} or cannot send data out, debug")
+            #print("Teamwebhook:",team_webhook)
+            #mmesage="testing 123..."
+            #send_slack(team_webhook,mmesage)
             # Find the metrics for each GPU on instance
             for i in range(deviceCount):
                 handle = nvmlDeviceGetHandleByIndex(i)
@@ -270,23 +348,38 @@ def main():
             #print(f'Average GPU utilization:',average_gpu_util)
             seconds = round(float(seconds_elapsed()))
             #print('seconds:',seconds)
+            #Calculate last 5 minutes for network metrics
+            #end = current_time
+            #start = end - timedelta(minutes=5)
+            # calculate combined network in and out last 5 min
+            network = get_network_stats(instance_id=INSTANCE_ID)
+            #print("network:",network)
             if seconds >= 7200:
-                if round(float(average_gpu_util)) <= 10 and cpu_util_tripped == False:    
+                if round(float(average_gpu_util)) <= 10 and cpu_util_tripped == False and network <= 10000:    
             #cpu util tripped == True means that there was higher than threshold cpu core activity and we cant stop the instance because of it
                     if alarm_pilot_light == 0:
                         #print(f'CPU or GPU below {THRESHOLD_PERCENTAGE}% threshold, turning pilot light ON')
                         alarm_pilot_light = 1
+                        mmessage=f"[ {current_time} ] INSTANCE: {INSTANCE_ID} ({HOSTNAME}) CPU, GPU and NETWORK seems idle, TURNED ALARM PILOT LIGHT to: ON, instance is expected to stop in: 3 hours"
+                        try:
+                            send_slack(team_webhook, mmessage)
+                        except:
+                            print(f"Could not send slack to webhook:{team_webhook}")
                 else:
                     if alarm_pilot_light == 1:
                         alarm_pilot_light = 0
+                        mmessage=f"[ {current_time} ] INSTANCE: {INSTANCE_ID} ({HOSTNAME}) CPU, GPU and NETWORK over minimum threshold, TURNED ALARM PILOT LIGHT to: OFF"
+                        try:
+                            send_slack(team_webhook, mmessage)
+                        except:
+                            print(f"Could not send slack to webhook:{team_webhook}")
                     #print(f'CPU or GPU above {THRESHOLD_PERCENTAGE}% threshold, turning pilot light OFF')
             else:
                 alarm_pilot_light = 0
-
             # Log the results
             for i in range(deviceCount):
                 handle = nvmlDeviceGetHandleByIndex(i)
-                logResults(team, emp_name, i, util, gpu_util, mem_util, powDrawStr, temp, average_gpu_util, alarm_pilot_light, cpu_util_tripped, seconds,current_time,per_core_utilization)
+                logResults(team, emp_name, i, util, gpu_util, mem_util, powDrawStr, temp, average_gpu_util, alarm_pilot_light, cpu_util_tripped, seconds,current_time,per_core_utilization,network)
             
             sleep(sleep_interval)
     finally:
