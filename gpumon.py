@@ -73,7 +73,7 @@ ec2 = boto3.client('ec2', region_name=EC2_REGION)
 # Create CloudWatch client
 cloudwatch = boto3.client('cloudwatch', region_name=EC2_REGION)
 
-def get_network_stats(instance_id):
+def get_network_stats(instance_id,network):
     # Set the end time to the current time
     end = datetime.utcnow()
     # Set the start time to 5 minutes ago
@@ -106,19 +106,21 @@ def get_network_stats(instance_id):
     datapoints_in = data_in.get("Datapoints", [])
     #print("datapoints_in:",datapoints_in)
     datapoints_out = data_out.get("Datapoints",[])
-    first_datapoint_in = 10000 #we dont want to switch off instance if we werent able to bring metrics in
-    first_datapoint_out = 10000
+    first_datapoint_in = 1 #we dont want to switch off instance if we werent able to bring metrics in
+    first_datapoint_out = 1
     if datapoints_in:
         # Access the first data point (assuming there is at least one)
         first_datapoint_in = datapoints_in[0]["Maximum"]
         #print(f"packetsin:{round(first_datapoint_in)}")
     else:
+        first_datapoint_in = network / 2
         print("No data points found.")
     if datapoints_out:
         # Access the first data point (assuming there is at least one)
         first_datapoint_out = datapoints_out[0]["Maximum"]
         #print(f"packetsout:{round(first_datapoint_out)}")
     else:
+        first_datapoint_in = network / 2
         print("No data points found.")
     network_sum = round(first_datapoint_in) + round(first_datapoint_out)
     return network_sum
@@ -283,6 +285,7 @@ deviceCount = nvmlDeviceGetCount()
 def main():
     global core_utilization_cache
     alarm_pilot_light = 0
+    network = 99
     cpu_util_tripped = False
     try:
         while True:
@@ -310,6 +313,10 @@ def main():
                     print('Could not get cpu core utilization statistics, debug')
 
             tags = get_instance_tags(INSTANCE_ID)
+            if 'Name' in tags:
+                instance_name = str(tags['Name'])
+            else:
+                instance_name = "NO_NAME_TAG"
             if 'Team' in tags:
                 team = str(tags['Team'])
             else:
@@ -326,7 +333,7 @@ def main():
                 team_webhook = os.getenv(team_var)
             except:
                 try:
-                    send_slack(debug_webhook,f"achtung, could not resolve team_webhook_url on {INSTANCE_ID} - {team_var}")
+                    send_slack(debug_webhook,f"achtung, could not resolve team_webhook_url on {instance_name} {INSTANCE_ID} - {team_var}")
                     team_webhook = debug_webhook
                 except:
                     print(f"AAAARGH! DEBUG WEBHOOK is None:${DEBUG_WEBHOOK_URL} or cannot send data out, debug")
@@ -352,15 +359,15 @@ def main():
             #end = current_time
             #start = end - timedelta(minutes=5)
             # calculate combined network in and out last 5 min
-            network = get_network_stats(instance_id=INSTANCE_ID)
-            #print("network:",network)
+            network = get_network_stats(instance_id=INSTANCE_ID,network=network)
+            print(f"name_tag:{instance_name} network:{network}")
             if seconds >= 7200:
                 if round(float(average_gpu_util)) <= 10 and cpu_util_tripped == False and network <= 10000:    
             #cpu util tripped == True means that there was higher than threshold cpu core activity and we cant stop the instance because of it
                     if alarm_pilot_light == 0:
                         #print(f'CPU or GPU below {THRESHOLD_PERCENTAGE}% threshold, turning pilot light ON')
                         alarm_pilot_light = 1
-                        mmessage=f"[ {current_time} ] INSTANCE: {INSTANCE_ID} ({HOSTNAME}) CPU, GPU and NETWORK seems idle, TURNED ALARM PILOT LIGHT to: ON, instance is expected to stop in: 3 hours"
+                        mmessage=f"[ {current_time} ] INSTANCE: {instance_name} - {INSTANCE_ID} ({HOSTNAME}) CPU, GPU and NETWORK seems idle, TURNED ALARM PILOT LIGHT to: ON, instance is expected to stop in: 3 hours"
                         try:
                             send_slack(team_webhook, mmessage)
                         except:
@@ -368,7 +375,7 @@ def main():
                 else:
                     if alarm_pilot_light == 1:
                         alarm_pilot_light = 0
-                        mmessage=f"[ {current_time} ] INSTANCE: {INSTANCE_ID} ({HOSTNAME}) CPU, GPU and NETWORK over minimum threshold, TURNED ALARM PILOT LIGHT to: OFF"
+                        mmessage=f"[ {current_time} ] INSTANCE: {instance_name} - {INSTANCE_ID} ({HOSTNAME}) CPU, GPU and NETWORK over minimum threshold, TURNED ALARM PILOT LIGHT to: OFF"
                         try:
                             send_slack(team_webhook, mmessage)
                         except:
