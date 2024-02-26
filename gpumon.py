@@ -296,6 +296,30 @@ def main():
     network_tripped = 0
     network = 99
     cpu_util_tripped = False
+    debug_webhook = os.getenv("DEBUG_WEBHOOK_URL")
+    team_var = str(team) + "_TEAM_WEBHOOK_URL"
+    tags = get_instance_tags(INSTANCE_ID)
+    if 'Name' in tags:
+        instance_name = str(tags['Name'])
+    else:
+        instance_name = "NO_NAME_TAG"
+    if 'Team' in tags:
+        team = str(tags['Team'])
+    else:
+        team = "NO_TAG"
+    if 'Employee' in tags:
+        emp_name = str(tags['Employee'])
+    else:
+        emp_name = "NO_TAG"
+    #print("team_var:",team_var)
+    try:
+        team_webhook = os.getenv(team_var)
+    except:
+        try:
+            send_slack(debug_webhook,f"achtung, could not resolve team_webhook_url on {instance_name} {INSTANCE_ID} - {team_var}")
+            team_webhook = debug_webhook
+        except:
+            print(f"AAAARGH! DEBUG WEBHOOK is None:${DEBUG_WEBHOOK_URL} or cannot send data out, debug")
     try:
         while True:
             total_gpu_util = 0
@@ -321,31 +345,9 @@ def main():
             except:
                     print('Could not get cpu core utilization statistics, debug')
 
-            tags = get_instance_tags(INSTANCE_ID)
-            if 'Name' in tags:
-                instance_name = str(tags['Name'])
-            else:
-                instance_name = "NO_NAME_TAG"
-            if 'Team' in tags:
-                team = str(tags['Team'])
-            else:
-                team = "NO_TAG"
-            if 'Employee' in tags:
-                emp_name = str(tags['Employee'])
-            else:
-                emp_name = "NO_TAG"
+
             PUSH_TO_CW = True
-            debug_webhook = os.getenv("DEBUG_WEBHOOK_URL")
-            team_var = str(team) + "_TEAM_WEBHOOK_URL"
-            #print("team_var:",team_var)
-            try:
-                team_webhook = os.getenv(team_var)
-            except:
-                try:
-                    send_slack(debug_webhook,f"achtung, could not resolve team_webhook_url on {instance_name} {INSTANCE_ID} - {team_var}")
-                    team_webhook = debug_webhook
-                except:
-                    print(f"AAAARGH! DEBUG WEBHOOK is None:${DEBUG_WEBHOOK_URL} or cannot send data out, debug")
+
             #print("Teamwebhook:",team_webhook)
             #mmesage="testing 123..."
             #send_slack(team_webhook,mmesage)
@@ -371,9 +373,7 @@ def main():
             network = get_network_stats(instance_id=INSTANCE_ID,network=network)
             if network_tripped == 0 and network <= 10000:
                 network_tripped = 1
-            else:
-                network_tripped = 0
-            print(f"name_tag:{instance_name} network:{network}")
+            #print(f"name_tag:{instance_name} network:{network}")
             if seconds >= 7200:
                 if round(float(average_gpu_util)) <= 10 and cpu_util_tripped == False and network <= 10000:    
             #cpu util tripped == True means that there was higher than threshold cpu core activity and we cant stop the instance because of it
@@ -399,8 +399,10 @@ def main():
             # Log the results
             for i in range(deviceCount):
                 handle = nvmlDeviceGetHandleByIndex(i)
-                logResults(team, emp_name, i, util, gpu_util, mem_util, powDrawStr, temp, average_gpu_util, alarm_pilot_light, cpu_util_tripped, seconds,current_time,per_core_utilization,network,network_tripped)
-            
+                try:
+                    logResults(team, emp_name, i, util, gpu_util, mem_util, powDrawStr, temp, average_gpu_util, alarm_pilot_light, cpu_util_tripped, seconds,current_time,per_core_utilization,network,network_tripped)
+            	except:
+                    print("could not write to disk")
             sleep(sleep_interval)
     finally:
         nvmlShutdown()
