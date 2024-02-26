@@ -296,8 +296,6 @@ def main():
     network_tripped = 0
     network = 99
     cpu_util_tripped = False
-    debug_webhook = os.getenv("DEBUG_WEBHOOK_URL")
-    team_var = str(team) + "_TEAM_WEBHOOK_URL"
     tags = get_instance_tags(INSTANCE_ID)
     if 'Name' in tags:
         instance_name = str(tags['Name'])
@@ -312,6 +310,8 @@ def main():
     else:
         emp_name = "NO_TAG"
     #print("team_var:",team_var)
+    debug_webhook = os.getenv("DEBUG_WEBHOOK_URL")
+    team_var = str(team) + "_TEAM_WEBHOOK_URL"
     try:
         team_webhook = os.getenv(team_var)
     except:
@@ -401,7 +401,7 @@ def main():
                 handle = nvmlDeviceGetHandleByIndex(i)
                 try:
                     logResults(team, emp_name, i, util, gpu_util, mem_util, powDrawStr, temp, average_gpu_util, alarm_pilot_light, cpu_util_tripped, seconds,current_time,per_core_utilization,network,network_tripped)
-            	except:
+                except:
                     print("could not write to disk")
             sleep(sleep_interval)
     finally:
