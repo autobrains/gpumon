@@ -28,13 +28,16 @@ Description=gpumon_proccess
 After=network.target
 Wants=network.target
 
+[Install]
+WantedBy=multi-user.target
+
 [Service]
 User=root
 Group=root
 Type=simple
+Restart=on-failure
+ExecStartPre=git -C /root/gpumon pull
 ExecStart=python3 /root/gpumon/gpumon.py
-[Install]
-WantedBy=multi-user.target
 EOT
 
 
