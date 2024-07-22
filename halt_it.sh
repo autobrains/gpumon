@@ -48,7 +48,7 @@ if [[ "${INSTANCE_ID}" == "" ]] || [[ "$(echo ${INSTANCE_ID} | grep -E 'i-[a-f0-
 fi
 if [[ "${DTYPE}" == "" ]] || [[ "${DTYPE}" == "0" ]]; then
         SEP=6
-    FILE="CPU_TEMP_"
+    FILE="CPUMON_LOGS_"
     STEP=500
 else
         SEP=12
