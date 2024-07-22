@@ -13,7 +13,10 @@
 ###########
 # Some changes to script have been made by Paul Seifer to adapt to python3.9, such as conversion of values to utf-8 strings.
 
-import urllib.request as urllib2
+try:
+    from urllib.request import Request, urlopen
+except ImportError:
+    from urllib2 import Request, urlopen
 import psutil
 import boto3
 from pynvml import *
@@ -21,6 +24,7 @@ from datetime import datetime, timedelta
 from time import sleep
 import time
 import requests
+import subprocess
 
 # Constants
 CACHE_DURATION = 300  # 5 minutes in seconds
@@ -29,6 +33,42 @@ THRESHOLD_PERCENTAGE = 10  # Threshold for average core utilization
 # Variables
 core_utilization_cache = [[] for _ in range(psutil.cpu_count())]  # List to store utilization data for each core
 cpu_util_tripped = 0
+def check_root_crontab(search_string):
+    try:
+        # Run the command to list root's crontab
+        result = subprocess.run(['sudo', 'crontab', '-l'], capture_output=True, text=True, check=True)
+        # Check if the search string is in the output
+        if search_string in result.stdout:
+            return True
+        else:
+            return False
+    except subprocess.CalledProcessError as e:
+        print(f"An error occurred: {e}")
+        return False
+    except PermissionError:
+        print("Permission denied. Make sure you have sudo privileges.")
+        return False
+def add_to_root_crontab(new_cron_job):
+    try:
+        # Get the current crontab content
+        current_crontab = subprocess.run(['sudo', 'crontab', '-l'], capture_output=True, text=True, check=True)
+        # Append the new job to the existing content
+        new_crontab = current_crontab.stdout + new_cron_job + "\n"
+        # Write the new crontab content
+        process = subprocess.Popen(['sudo', 'crontab', '-'], stdin=subprocess.PIPE, text=True)
+        process.communicate(input=new_crontab)
+        if process.returncode == 0:
+            print("New cron job added successfully.")
+            return True
+        else:
+            print("Failed to add new cron job.")
+            return False
+    except subprocess.CalledProcessError as e:
+        print(f"An error occurred: {e}")
+        return False
+    except PermissionError:
+        print("Permission denied. Make sure you have sudo privileges.")
+        return False
 
 def seconds_elapsed():
     return time.time() - psutil.boot_time()
@@ -53,15 +93,18 @@ store_reso = 60
 
 #Instance information
 BASE_URL = 'http://169.254.169.254/latest/meta-data/'
-INSTANCE_ID = urllib2.urlopen(BASE_URL + 'instance-id').read().decode("utf-8") 
-
-IMAGE_ID = urllib2.urlopen(BASE_URL + 'ami-id').read().decode("utf-8") 
-
-INSTANCE_TYPE = urllib2.urlopen(BASE_URL + 'instance-type').read().decode("utf-8") 
-
-INSTANCE_AZ = urllib2.urlopen(BASE_URL + 'placement/availability-zone').read().decode("utf-8") 
-
-HOSTNAME = urllib2.urlopen(BASE_URL + 'hostname').read().decode("utf-8")
+req = Request('http://169.254.169.254/latest/api/token',None,{'X-aws-ec2-metadata-token-ttl-seconds' : '21600'},method='PUT')
+TOKEN = urlopen(req).read().decode("utf-8")
+req = Request(BASE_URL + 'instance-id', None,{'X-aws-ec2-metadata-token' : TOKEN },method='GET')
+INSTANCE_ID = urlopen(req).read().decode("utf-8")
+req = Request(BASE_URL + 'ami-id', None,{'X-aws-ec2-metadata-token' : TOKEN },method='GET')
+IMAGE_ID = urlopen(req).read().decode("utf-8")
+req = Request(BASE_URL + 'instance-type', None,{'X-aws-ec2-metadata-token' : TOKEN },method='GET')
+INSTANCE_TYPE = urlopen(req).read().decode("utf-8")
+req = Request(BASE_URL + 'placement/availability-zone', None,{'X-aws-ec2-metadata-token' : TOKEN },method='GET')
+INSTANCE_AZ = urlopen(req).read().decode("utf-8")
+req = Request(BASE_URL + 'hostname', None,{'X-aws-ec2-metadata-token' : TOKEN },method='GET')
+HOSTNAME = urlopen(req).read().decode("utf-8")
 
 EC2_REGION = INSTANCE_AZ[:-1]
 
@@ -291,6 +334,14 @@ def logResults(team, emp_name, i, util, gpu_util, mem_util, powDrawStr, temp, av
 nvmlInit()
 deviceCount = nvmlDeviceGetCount()
 def main():
+    result = check_root_crontab("halt_it.sh")
+    if result:
+       print("halt_it.sh presence in crontab detected, continue")
+    else:
+       print("updating crontab with new halt_it.sh call")
+       new_job = "*/10 * * * * bash /root/gpumon/halt_it.sh | tee -a /tmp/halt_it_log.txt"
+       add_to_root_crontab(new_job)
+
     global core_utilization_cache
     alarm_pilot_light = 0
     network_tripped = 0
