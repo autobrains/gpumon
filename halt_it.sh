@@ -77,7 +77,7 @@ This instance:${INSTANCE_ID} seems to be have been idle for the last
 unfortunate to just logged in into it, please wait couple of minutes and 
 start it again from AWS console or script or type:
 
-sudo /root/gpumon/kill_halt.sh
+sudo bash /root/gpumon/kill_halt.sh
 
 to stop the shutdown now. The shutdown pause in this case will last 2 hours
 after which the shutdown sequence will resume.

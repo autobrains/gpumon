@@ -1,8 +1,0 @@
-cd /root/gpumon
-git pull
-pip install psutil
-systemctl stop gpumon
-systemctl daemon-reload
-systemctl start gpumon
-systemctl enable gpumon
-systemctl status gpumon
