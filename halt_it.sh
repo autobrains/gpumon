@@ -62,19 +62,19 @@ fi
 echo "[ $(date) ] Checking awscli validity"
 check=$(aws s3 ls 2>&1 | grep docevents | grep cannot);
 if [ "${check}" != "" ]; then
-   echo "need to fix, will run: python3 -m pip install --upgrade boto3 botocore awscli"
+   echo "[ $(date) ] need to fix, will run: python3 -m pip install --upgrade boto3 botocore awscli"
    python3 -m pip install --upgrade boto3 botocore awscli
-   echo "done fixin"
+   echo "[ $(date) ] done fixin"
  else
-   echo "no problem with awscli...continue..."
+   echo "n[ $(date) ] no problem with awscli...continue..."
 fi
 check=$(sudo aws s3 ls 2>&1 | grep docevents | grep cannot);
 if [ "${check}" != "" ]; then
-   echo "need to fix, will run: sudo python3 -m pip install --upgrade boto3 botocore awscli"
+   echo "[ $(date) ] need to fix, will run: sudo python3 -m pip install --upgrade boto3 botocore awscli"
    sudo python3 -m pip install --upgrade boto3 botocore awscli
-   echo "done fixin"
+   echo "[ $(date) ] done fixin"
  else
-   echo "no problem with sudo awscli...continue..."
+   echo "[ $(date) ] no problem with sudo awscli...continue..."
 fi
 echo "[ $(date) ] Getting creds from SM..."
 creds_tmp=$(aws secretsmanager get-secret-value --secret-id "AB/InstanceRole" --region eu-west-1 |grep SecretString | rev | cut -c2- | rev | cut -d ":" -f2- | tr -d " " | tr -d '"')
