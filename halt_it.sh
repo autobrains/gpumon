@@ -66,7 +66,7 @@ if [ "${check}" != "" ]; then
    python3 -m pip install --upgrade boto3 botocore awscli
    echo "[ $(date) ] done fixin"
  else
-   echo "n[ $(date) ] no problem with awscli...continue..."
+   echo "[ $(date) ] no problem with awscli...continue..."
 fi
 check=$(sudo aws s3 ls 2>&1 | grep docevents | grep cannot);
 if [ "${check}" != "" ]; then
@@ -147,7 +147,7 @@ if [ "${NOGO}" == "TRUE" ]; then
    #res=$(sudo aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" --region $AWSREGION)
    #echo "[ $(date) ] debug: got result for aws describe-instances: ${res}"
 else
-   echo "[ $(date) ] LOOKS LIKE WE ARE A GO - WILL SHUT THE INSTANCE DOWN, REASON:${REASON}"
+   echo "[ $(date) ] LOOKS LIKE WE ARE A GO - WILL SHUT THE INSTANCE DOWN, REASON:${REASON}" | tee -a /root/gpumon_persistent.log
    wall "[ $(date) ] ${wall_message}"
    sleep 180
    wall "[ $(date) ] Well, 3 minutes have passed, shutdown is now...Bye Bye"
