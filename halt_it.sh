@@ -8,7 +8,8 @@ if [ ! -f "${TIMESTAMP_FILE}" ]; then
     echo "[ $(date) ] Stop file not found, will continue the script"
 else
     current_time=$(date +%s)
-    timestamp=$(cat "${TIMESTAMP_FILE}")
+    _timestamp=$(cat "${TIMESTAMP_FILE}")
+    timestamp=$(date -d "${_timestamp}" +%s)
     time_diff=$((current_time - timestamp))
     two_hours=$((2 * 60 * 60))  # 2 hours in seconds
 
