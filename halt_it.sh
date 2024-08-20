@@ -64,7 +64,7 @@ echo "[ $(date) ] Checking awscli validity"
 check=$(aws s3 ls 2>&1 | grep docevents | grep cannot);
 if [ "${check}" != "" ]; then
    echo "[ $(date) ] need to fix, will run: python3 -m pip install --upgrade boto3 botocore awscli"
-   python3 -m pip install --upgrade boto3 botocore awscli
+   python3 -m pip install --upgrade boto3 botocore awscli --break-system-packages
    echo "[ $(date) ] done fixin"
  else
    echo "[ $(date) ] no problem with awscli...continue..."
@@ -72,7 +72,7 @@ fi
 check=$(sudo aws s3 ls 2>&1 | grep docevents | grep cannot);
 if [ "${check}" != "" ]; then
    echo "[ $(date) ] need to fix, will run: sudo python3 -m pip install --upgrade boto3 botocore awscli"
-   sudo python3 -m pip install --upgrade boto3 botocore awscli
+   sudo python3 -m pip install --upgrade boto3 botocore awscli --break-system-packages
    echo "[ $(date) ] done fixin"
  else
    echo "[ $(date) ] no problem with sudo awscli...continue..."
