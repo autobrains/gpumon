@@ -36,22 +36,6 @@ core_utilization_cache = [[] for _ in range(psutil.cpu_count())]  # List to stor
 cpu_util_tripped = 0
 
 #Functions
-def create_tag(instance_id, tag_name, default_value):
-    """
-    Ensures that a particular tag is present in the instance tags.
-    If the tag is not present, it adds the tag with the specified default value.
-
-    :param instance_id: The ID of the instance.
-    :param tag_name: The tag name to check for.
-    :param default_value: The default value to set if the tag is not found.
-    :return: None
-    """
-    ec2 = boto3.client('ec2')
-    ec2.create_tags(
-        Resources=[instance_id],
-        Tags=[{'Key': tag_name, 'Value': default_value}]
-        )
-    print(f"Tag '{tag_name}' with value '{default_value}' added to instance {instance_id}.")
 
 def check_root_crontab(search_string):
     try:
@@ -218,6 +202,22 @@ def send_slack(webhook_url,message):
         print("Message sent to Slack successfully.")
     else:
         print(f"Failed to send message to Slack. Status code: {response.status_code}")
+        
+def create_tag(instance_id, tag_name, default_value):
+    """
+    Ensures that a particular tag is present in the instance tags.
+    If the tag is not present, it adds the tag with the specified default value.
+
+    :param instance_id: The ID of the instance.
+    :param tag_name: The tag name to check for.
+    :param default_value: The default value to set if the tag is not found.
+    :return: None
+    """
+    ec2.create_tags(
+        Resources=[instance_id],
+        Tags=[{'Key': tag_name, 'Value': default_value}]
+        )
+    print(f"Tag '{tag_name}' with value '{default_value}' added to instance {instance_id}.")
 
 def getPowerDraw(handle):
     try:
