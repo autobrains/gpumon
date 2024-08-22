@@ -385,7 +385,7 @@ def main():
     if 'GPUMON_POLICY' in tags:
         policy = str(tags['GPUMON_POLICY'])
     else:
-        create_tag(instance_id,'GPUMON_POLICY',policy)
+        create_tag(INSTANCE_ID,'GPUMON_POLICY',policy)
 
     if policy != 'SEVERE':
         RESTART_BACKOFF == 7200
