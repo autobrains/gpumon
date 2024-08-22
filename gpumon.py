@@ -388,6 +388,7 @@ def main():
         create_tag(INSTANCE_ID,'GPUMON_POLICY',policy)
 
     if policy != 'SEVERE':
+        print('POLICY TAG:SEVERE detected:',{policy})
         RESTART_BACKOFF = 7200
         THRESHOLD_PERCENTAGE = 10
         GPU_THRESHOLD = 10
