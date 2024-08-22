@@ -26,6 +26,7 @@ import time
 import requests
 import subprocess
 
+
 # Constants
 CACHE_DURATION = 300  # 5 minutes in seconds
 THRESHOLD_PERCENTAGE = 10  # Threshold for average core utilization
@@ -33,6 +34,25 @@ THRESHOLD_PERCENTAGE = 10  # Threshold for average core utilization
 # Variables
 core_utilization_cache = [[] for _ in range(psutil.cpu_count())]  # List to store utilization data for each core
 cpu_util_tripped = 0
+
+#Functions
+def create_tag(instance_id, tag_name, default_value):
+    """
+    Ensures that a particular tag is present in the instance tags.
+    If the tag is not present, it adds the tag with the specified default value.
+
+    :param instance_id: The ID of the instance.
+    :param tag_name: The tag name to check for.
+    :param default_value: The default value to set if the tag is not found.
+    :return: None
+    """
+    ec2 = boto3.client('ec2')
+    ec2.create_tags(
+        Resources=[instance_id],
+        Tags=[{'Key': tag_name, 'Value': default_value}]
+        )
+        print(f"Tag '{tag_name}' with value '{default_value}' added to instance {instance_id}.")
+
 def check_root_crontab(search_string):
     try:
         # Run the command to list root's crontab
@@ -48,6 +68,7 @@ def check_root_crontab(search_string):
     except PermissionError:
         print("Permission denied. Make sure you have sudo privileges.")
         return False
+
 def add_to_root_crontab(new_cron_job):
     try:
         # Get the current crontab content
@@ -84,7 +105,7 @@ EC2_REGION = 'eu-west-1'
 
 ###CHOOSE NAMESPACE PARMETERS HERE###
 my_NameSpace = 'GPU-metrics-with-team-tag' 
-#my_NameSpace = 'Alarm-new-namespace'
+
 ### CHOOSE PUSH INTERVAL ####
 sleep_interval = 10
 
@@ -347,6 +368,7 @@ def main():
     network_tripped = 0
     network = 99
     cpu_util_tripped = False
+    policy = 'STANDARD'
     tags = get_instance_tags(INSTANCE_ID)
     if 'Name' in tags:
         instance_name = str(tags['Name'])
@@ -360,6 +382,22 @@ def main():
         emp_name = str(tags['Employee'])
     else:
         emp_name = "NO_TAG"
+    if 'GPUMON_POLICY' in tags:
+        policy = str(tags['GPUMON_POLICY'])
+    else:
+        create_tags(instance_id,'GPUMON_POLICY',policy)
+
+    if policy not 'SEVERE':
+        RESTART_BACKOFF == 7200
+        THRESHOLD_PERCENTAGE == 10
+        GPU_THRESHOLD == 10
+        NETWORK_THRESHOLD == 10000
+    else:
+        RESTART_BACKOFF == 600
+        THRESHOLD_PERCENTAGE == 40
+        GPU_THRESHOLD == 10
+        NETWORK_THRESHOLD == 200000
+
     #print("team_var:",team_var)
     debug_webhook = os.getenv("DEBUG_WEBHOOK_URL")
     team_var = str(team) + "_TEAM_WEBHOOK_URL"
@@ -399,9 +437,6 @@ def main():
 
             PUSH_TO_CW = True
 
-            #print("Teamwebhook:",team_webhook)
-            #mmesage="testing 123..."
-            #send_slack(team_webhook,mmesage)
             # Find the metrics for each GPU on instance
             for i in range(deviceCount):
                 handle = nvmlDeviceGetHandleByIndex(i)
@@ -410,23 +445,17 @@ def main():
                 temp = getTemp(handle)
                 util, gpu_util, mem_util = getUtilization(handle)
                 total_gpu_util += float(gpu_util)
-                #logResults(team, emp_name, i, util, gpu_util, mem_util, powDrawStr, temp, average_gpu_util)
-
+                
             average_gpu_util = total_gpu_util / deviceCount
-            
-            #print(f'Average GPU utilization:',average_gpu_util)
             seconds = round(float(seconds_elapsed()))
-            #print('seconds:',seconds)
-            #Calculate last 5 minutes for network metrics
-            #end = current_time
-            #start = end - timedelta(minutes=5)
+
             # calculate combined network in and out last 5 min
             network = get_network_stats(instance_id=INSTANCE_ID,network=network)
             if network_tripped == 0 and network <= 10000:
                 network_tripped = 1
             #print(f"name_tag:{instance_name} network:{network}")
-            if seconds >= 7200:
-                if round(float(average_gpu_util)) <= 10 and cpu_util_tripped == False and network <= 10000:    
+            if seconds >= RESTART_BACKOFF:
+                if round(float(average_gpu_util)) <= GPU_THRESHOLD and cpu_util_tripped == False and network <= NETWORK_THRESHOLD:    
             #cpu util tripped == True means that there was higher than threshold cpu core activity and we cant stop the instance because of it
                     if alarm_pilot_light == 0:
                         #print(f'CPU or GPU below {THRESHOLD_PERCENTAGE}% threshold, turning pilot light ON')
