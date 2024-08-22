@@ -202,7 +202,7 @@ def send_slack(webhook_url,message):
         print("Message sent to Slack successfully.")
     else:
         print(f"Failed to send message to Slack. Status code: {response.status_code}")
-        
+
 def create_tag(instance_id, tag_name, default_value):
     """
     Ensures that a particular tag is present in the instance tags.
@@ -388,15 +388,15 @@ def main():
         create_tag(INSTANCE_ID,'GPUMON_POLICY',policy)
 
     if policy != 'SEVERE':
-        RESTART_BACKOFF == 7200
-        THRESHOLD_PERCENTAGE == 10
-        GPU_THRESHOLD == 10
-        NETWORK_THRESHOLD == 10000
+        RESTART_BACKOFF = 7200
+        THRESHOLD_PERCENTAGE = 10
+        GPU_THRESHOLD = 10
+        NETWORK_THRESHOLD = 10000
     else:
-        RESTART_BACKOFF == 600
-        THRESHOLD_PERCENTAGE == 40
-        GPU_THRESHOLD == 10
-        NETWORK_THRESHOLD == 200000
+        RESTART_BACKOFF = 600
+        THRESHOLD_PERCENTAGE = 40
+        GPU_THRESHOLD = 10
+        NETWORK_THRESHOLD = 200000
 
     #print("team_var:",team_var)
     debug_webhook = os.getenv("DEBUG_WEBHOOK_URL")
