@@ -51,7 +51,7 @@ def create_tag(instance_id, tag_name, default_value):
         Resources=[instance_id],
         Tags=[{'Key': tag_name, 'Value': default_value}]
         )
-        print(f"Tag '{tag_name}' with value '{default_value}' added to instance {instance_id}.")
+    print(f"Tag '{tag_name}' with value '{default_value}' added to instance {instance_id}.")
 
 def check_root_crontab(search_string):
     try:
