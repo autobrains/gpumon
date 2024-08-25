@@ -453,7 +453,7 @@ def main():
 
             # calculate combined network in and out last 5 min
             network = get_network_stats(instance_id=INSTANCE_ID,network=network)
-            if network_tripped == 0 and network <= 10000:
+            if network_tripped == 0 and network <= NETWORK_THRESHOLD:
                 network_tripped = 1
             #print(f"name_tag:{instance_name} network:{network}")
             if seconds >= RESTART_BACKOFF:
