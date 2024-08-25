@@ -24,7 +24,7 @@ else
 fi
 if [ ! -s "/tmp/halt_it.info" ]; then
    TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null)
-   AWSREGION=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" -v http://169.254.169.254/latest/meta-data/hostname/ 2>/dev/null | cut -d "." -f2)
+   AWSREGION=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" -v http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null)
    INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" -v http://169.254.169.254/latest/meta-data/instance-id/ 2>/dev/null | cut -d "." -f2)
    nvidia-smi --list-gpus 1>/dev/null
    error=$?
