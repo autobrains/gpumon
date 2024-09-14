@@ -197,6 +197,21 @@ def send_slack(webhook_url,message):
         print("Message sent to Slack successfully.")
     else:
         print(f"Failed to send message to Slack. Status code: {response.status_code}")
+def create_tag(instance_id, tag_name, default_value):
+    """
+    Ensures that a particular tag is present in the instance tags.
+    If the tag is not present, it adds the tag with the specified default value.
+
+    :param instance_id: The ID of the instance.
+    :param tag_name: The tag name to check for.
+    :param default_value: The default value to set if the tag is not found.
+    :return: None
+    """
+    ec2.create_tags(
+        Resources=[instance_id],
+        Tags=[{'Key': tag_name, 'Value': default_value}]
+        )
+    print(f"Tag '{tag_name}' with value '{default_value}' added to instance {instance_id}.")
 
 def logResults(team, emp_name, alarm_pilot_light, cpu_util_tripped, seconds, current_time, per_core_utilization, network, network_tripped):
     try:
@@ -275,6 +290,7 @@ def main():
     network_tripped = 0
     network = 99
     cpu_util_tripped = False
+    policy = 'STANDARD'
     tags = get_instance_tags(INSTANCE_ID)
     if 'Name' in tags:
         instance_name = str(tags['Name'])
@@ -288,6 +304,21 @@ def main():
         emp_name = str(tags['Employee'])
     else:
         emp_name = "NO_TAG"
+    if 'GPUMON_POLICY' in tags:
+        policy = str(tags['GPUMON_POLICY'])
+    else:
+        create_tag(INSTANCE_ID,'GPUMON_POLICY',policy)
+
+    if policy != 'SEVERE':
+        print('POLICY TAG detected:',{policy})
+        RESTART_BACKOFF = 7200
+        THRESHOLD_PERCENTAGE = 10
+        NETWORK_THRESHOLD = 10000
+    else:
+        print('POLICY TAG detected:',{policy})
+        RESTART_BACKOFF = 600
+        THRESHOLD_PERCENTAGE = 40
+        NETWORK_THRESHOLD = 200000
     debug_webhook = os.getenv("DEBUG_WEBHOOK_URL")
     team_var = str(team) + "_TEAM_WEBHOOK_URL"
     #print("team_var:",team_var)
@@ -330,14 +361,11 @@ def main():
  
             # calculate combined network in and out last 5 min
             network = get_network_stats(instance_id=INSTANCE_ID,network=network)
-            if network <= 10000:
-                if not network_tripped:
-                    network_tripped = 1
-            else:
-                network_tripped = 0
+            if network_tripped == 0 and network <= NETWORK_THRESHOLD:
+                network_tripped = 1
             #print(f"name_tag:{instance_name} network:{network}")
-            if seconds >= 7200:
-                if cpu_util_tripped == False and network <= 10000:    
+            if seconds >= RESTART_BACKOFF:
+                if cpu_util_tripped == False and network <= NETWORK_THRESHOLD:    
             #cpu util tripped == True means that there was higher than threshold cpu core activity and we cant stop the instance because of it
                     if alarm_pilot_light == 0:
                         #print(f'CPU or GPU below {THRESHOLD_PERCENTAGE}% threshold, turning pilot light ON')
