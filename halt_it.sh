@@ -60,11 +60,20 @@ else
                 STEP=2000 #4 gpus give 4 lines in log
         fi
 fi
+echo "[ $(date) ] Is AWS cli installed?"
+check=$(aws s3 ls 2>&1 | grep "snap")
+if [ "${check}" != "" ]; then
+   echo "[ $(date) ] need to fix, will run: apt install awscli"
+   DEBIAN_FRONTEND=noninteractive apt install -y awscli
+   echo "[ $(date) ] done fixin"
+ else
+   echo "[ $(date) ] no problem with awscli...continue..."
+fi
 echo "[ $(date) ] Checking awscli validity"
 check=$(aws s3 ls 2>&1 | grep docevents | grep cannot);
 if [ "${check}" != "" ]; then
    echo "[ $(date) ] need to fix, will run: python3 -m pip install --upgrade boto3 botocore awscli"
-   python3 -m pip install --upgrade boto3 botocore awscli --break-system-packages
+   python3 -m pip install --upgrade boto3 botocore awscli
    echo "[ $(date) ] done fixin"
  else
    echo "[ $(date) ] no problem with awscli...continue..."
