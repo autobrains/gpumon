@@ -387,18 +387,24 @@ def main():
     else:
         create_tag(INSTANCE_ID,'GPUMON_POLICY',policy)
 
-    if policy != 'SEVERE':
+    if policy == 'RELAXED':
         print('POLICY TAG detected:',{policy})
         RESTART_BACKOFF = 7200
-        THRESHOLD_PERCENTAGE = 10
+        THRESHOLD_PERCENTAGE = 5
         GPU_THRESHOLD = 10
-        NETWORK_THRESHOLD = 10000
-    else:
+        NETWORK_THRESHOLD = 5000
+    elif policy == "SEVERE":
         print('POLICY TAG detected:',{policy})
         RESTART_BACKOFF = 600
         THRESHOLD_PERCENTAGE = 40
         GPU_THRESHOLD = 10
         NETWORK_THRESHOLD = 200000
+    else:
+        print('POLICY TAG detected:',{policy})
+        RESTART_BACKOFF = 7200
+        THRESHOLD_PERCENTAGE = 10
+        GPU_THRESHOLD = 10
+        NETWORK_THRESHOLD = 10000
 
     #print("team_var:",team_var)
     debug_webhook = os.getenv("DEBUG_WEBHOOK_URL")
