@@ -386,7 +386,7 @@ def main():
         policy = str(tags['GPUMON_POLICY'])
     else:
         create_tag(INSTANCE_ID,'GPUMON_POLICY',policy)
-
+    
     if policy == 'RELAXED':
         print('POLICY TAG detected:',{policy})
         RESTART_BACKOFF = 7200
@@ -399,6 +399,12 @@ def main():
         THRESHOLD_PERCENTAGE = 40
         GPU_THRESHOLD = 10
         NETWORK_THRESHOLD = 200000
+    elif policy == "SUSPEND": #this should keep it running even if no activity is detected
+        print('POLICY TAG detected:',{policy})
+        RESTART_BACKOFF = 864000 #10 days backoff then if the box is really quite it can die
+        THRESHOLD_PERCENTAGE = 0
+        GPU_THRESHOLD = 0
+        NETWORK_THRESHOLD = 0
     else:
         print('POLICY TAG detected:',{policy})
         RESTART_BACKOFF = 7200
