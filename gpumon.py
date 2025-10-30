@@ -395,10 +395,10 @@ def main():
         NETWORK_THRESHOLD = 5000
     elif policy == "SEVERE":
         print('POLICY TAG detected:',{policy})
-        RESTART_BACKOFF = 600
+        RESTART_BACKOFF = 300
         THRESHOLD_PERCENTAGE = 40
-        GPU_THRESHOLD = 10
-        NETWORK_THRESHOLD = 200000
+        GPU_THRESHOLD = 2
+        NETWORK_THRESHOLD = 2000000
     elif policy == "SUSPEND": #this should keep it running even if no activity is detected
         print('POLICY TAG detected:',{policy})
         RESTART_BACKOFF = 864000 #10 days backoff then if the box is really quite it can die
