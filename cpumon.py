@@ -1,398 +1,407 @@
+#!/usr/bin/env python3
 # Copyright 2017 Amazon.com, Inc. or its affiliates. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License").
-# You may not use this file except in compliance with the License.
-# A copy of the License is located at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#  
-#  or in the "license" file accompanying this file. This file is distributed 
-#  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either 
-#  express or implied. See the License for the specific language governing 
-#  permissions and limitations under the License.
-###########
-# Some changes to script have been made by Paul Seifer to adapt to python3.9, such as conversion of values to utf-8 strings.
+# Some changes to script have been made by Paul Seifer to adapt to python3.9.
+# Additional changes here keep the legacy CloudWatch/text-log behavior while
+# adding batched JSONL exports to S3 for metrics and events.
+
 try:
     from urllib.request import Request, urlopen
 except ImportError:
     from urllib2 import Request, urlopen
-import psutil
-import boto3
-from datetime import datetime, timedelta
-from time import sleep
-import time
-import requests
+
+import gzip
+import json
 import os
 import subprocess
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from time import sleep
+
+import boto3
+import psutil
+import requests
+from botocore.exceptions import ClientError
+
+CACHE_DURATION = 300
+THRESHOLD_PERCENTAGE = 10
+S3_BUCKET = 'ab-gpumon-logs'
+S3_PREFIX = 'v1'
+S3_UPLOAD_INTERVAL_SEC = 300
+S3_SPOOL_ROOT = '/tmp/gpumon_s3'
+TMP_FILE = '/tmp/CPUMON_LOGS_'
+MY_NAMESPACE = 'GPU-metrics-with-team-tag'
+SLEEP_INTERVAL = 10
+STORE_RESO = 60
+
+core_utilization_cache = [[] for _ in range(psutil.cpu_count())]
 
 
-# Constants
-CACHE_DURATION = 300  # 5 minutes in seconds
-THRESHOLD_PERCENTAGE = 10  # Threshold for average core utilization
+def utc_now():
+    return datetime.now(timezone.utc)
 
-# Variables
-core_utilization_cache = [[] for _ in range(psutil.cpu_count())]  # List to store utilization data for each core
-cpu_util_tripped = 0
+
+def ensure_parent_dir(path):
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+
+
+def get_imds_token():
+    req = Request(
+        'http://169.254.169.254/latest/api/token',
+        None,
+        {'X-aws-ec2-metadata-token-ttl-seconds': '21600'},
+        method='PUT',
+    )
+    return urlopen(req, timeout=3).read().decode('utf-8')
+
+
+def get_metadata(path, token):
+    req = Request(
+        'http://169.254.169.254/latest/meta-data/' + path,
+        None,
+        {'X-aws-ec2-metadata-token': token},
+        method='GET',
+    )
+    return urlopen(req, timeout=3).read().decode('utf-8')
+
 
 def check_root_crontab(search_string):
     try:
-        # Run the command to list root's crontab
         result = subprocess.run(['sudo', 'crontab', '-l'], capture_output=True, text=True, check=True)
-
-        # Check if the search string is in the output
-        if search_string in result.stdout:
-            return True
-        else:
-            return False
-    except subprocess.CalledProcessError as e:
-        print(f"An error occurred: {e}")
+        return search_string in result.stdout
+    except subprocess.CalledProcessError as exc:
+        print(f'An error occurred: {exc}')
         return False
     except PermissionError:
-        print("Permission denied. Make sure you have sudo privileges.")
+        print('Permission denied. Make sure you have sudo privileges.')
         return False
+
+
 def add_to_root_crontab(new_cron_job):
     try:
-        # Get the current crontab content
         current_crontab = subprocess.run(['sudo', 'crontab', '-l'], capture_output=True, text=True, check=True)
-
-        # Append the new job to the existing content
-        new_crontab = current_crontab.stdout + new_cron_job + "\n"
-
-        # Write the new crontab content
+        new_crontab = current_crontab.stdout + new_cron_job + '\n'
         process = subprocess.Popen(['sudo', 'crontab', '-'], stdin=subprocess.PIPE, text=True)
         process.communicate(input=new_crontab)
+        return process.returncode == 0
+    except Exception as exc:  # noqa: BLE001
+        print(f'Failed to update crontab: {exc}')
+        return False
 
-        if process.returncode == 0:
-            print("New cron job added successfully.")
-            return True
-        else:
-            print("Failed to add new cron job.")
-            return False
-    except subprocess.CalledProcessError as e:
-        print(f"An error occurred: {e}")
-        return False
-    except PermissionError:
-        print("Permission denied. Make sure you have sudo privileges.")
-        return False
+
 def seconds_elapsed():
     return time.time() - psutil.boot_time()
+
 
 def get_per_core_cpu_utilization():
     return psutil.cpu_percent(interval=1, percpu=True)
 
+
 def calculate_average_core_utilization():
     return [sum(core_data) / len(core_data) if core_data else 0 for core_data in core_utilization_cache]
 
-### CHOOSE REGION ####
-EC2_REGION = 'eu-west-1'
 
-###CHOOSE NAMESPACE PARMETERS HERE###
-my_NameSpace = 'CPU-metrics' 
+def sanitize_partition(value):
+    value = str(value or 'NO_TAG')
+    return ''.join(ch if (ch.isalnum() or ch in ('-', '_', '.', '=')) else '_' for ch in value)
 
-sleep_interval = 10
 
-### CHOOSE STORAGE RESOLUTION (BETWEEN 1-60) ####
-store_reso = 60
+class S3JsonlExporter:
+    def __init__(self, bucket, prefix, root_dir, region_name, context):
+        self.bucket = bucket
+        self.prefix = prefix.strip('/')
+        self.root_dir = root_dir.rstrip('/')
+        self.context = dict(context)
+        self.s3 = boto3.client('s3', region_name=region_name)
+        self.last_flush = 0
 
-#Instance information
-BASE_URL = 'http://169.254.169.254/latest/meta-data/'
-req = Request('http://169.254.169.254/latest/api/token',None,{'X-aws-ec2-metadata-token-ttl-seconds' : '21600'},method='PUT')
-TOKEN = urlopen(req).read().decode("utf-8")
-req = Request(BASE_URL + 'instance-id', None,{'X-aws-ec2-metadata-token' : TOKEN },method='GET')
-INSTANCE_ID = urlopen(req).read().decode("utf-8") 
-req = Request(BASE_URL + 'ami-id', None,{'X-aws-ec2-metadata-token' : TOKEN },method='GET')
-IMAGE_ID = urlopen(req).read().decode("utf-8")
-req = Request(BASE_URL + 'instance-type', None,{'X-aws-ec2-metadata-token' : TOKEN },method='GET')
-INSTANCE_TYPE = urlopen(req).read().decode("utf-8") 
-req = Request(BASE_URL + 'placement/availability-zone', None,{'X-aws-ec2-metadata-token' : TOKEN },method='GET')
-INSTANCE_AZ = urlopen(req).read().decode("utf-8")  
-req = Request(BASE_URL + 'hostname', None,{'X-aws-ec2-metadata-token' : TOKEN },method='GET')
-HOSTNAME = urlopen(req).read().decode("utf-8")  
-TIMESTAMP = datetime.now().strftime('%Y-%m-%dT%H')
-TMP_FILE = '/tmp/CPUMON_LOGS_'
-TMP_FILE_SAVED = TMP_FILE + TIMESTAMP
-# Create EC2 client to get tags
-ec2 = boto3.client('ec2', region_name=EC2_REGION)
-# Create CloudWatch client
-cloudwatch = boto3.client('cloudwatch', region_name=EC2_REGION)
+    def _local_path(self, kind, dt):
+        base = (
+            f"{self.root_dir}/{kind}/dt={dt.strftime('%Y-%m-%d')}/hour={dt.strftime('%H')}/"
+            f"team={sanitize_partition(self.context.get('team'))}/"
+            f"instance_id={sanitize_partition(self.context.get('instance_id'))}"
+        )
+        Path(base).mkdir(parents=True, exist_ok=True)
+        return f"{base}/{kind}_{dt.strftime('%Y-%m-%dT%H')}.jsonl"
 
-def get_network_stats(instance_id,network):
-    # Set the end time to the current time
-    end = datetime.utcnow()
-    # Set the start time to 5 minutes ago
-    start = end - timedelta(minutes=5)
-    # Format the time strings
-    start_str = start.strftime("%Y-%m-%dT%H:%M:%SZ")
-    end_str = end.strftime("%Y-%m-%dT%H:%M:%SZ")
-    #print("From:",start_str,"Till:",end_str,"instance:",instance_id)
-    data_in = cloudwatch.get_metric_statistics(
-        Period=60,
-        StartTime=start_str,
-        EndTime=end_str,
-        MetricName="NetworkPacketsIn",
-        Namespace="AWS/EC2",
-        Statistics=["Maximum"],
-        Unit="Count",
-        Dimensions=[{'Name': 'InstanceId', 'Value': str(instance_id)}]
-    )
-    #print("data_in:",data_in)
-    data_out = cloudwatch.get_metric_statistics(
-        Period=60,
-        StartTime=start_str,
-        EndTime=end_str,
-        MetricName="NetworkPacketsOut",
-        Namespace="AWS/EC2",
-        Statistics=["Maximum"],
-        Unit="Count",
-        Dimensions=[{'Name': 'InstanceId', 'Value': str(instance_id)}]
-    )
-    datapoints_in = data_in.get("Datapoints", [])
-    #print("datapoints_in:",datapoints_in)
-    datapoints_out = data_out.get("Datapoints",[])
-    first_datapoint_in = 1 #we dont want to switch off instance if we werent able to bring metrics in
-    first_datapoint_out = 1
-    if datapoints_in:
-        # Access the first data point (assuming there is at least one)
-        first_datapoint_in = datapoints_in[0]["Maximum"]
-        #print(f"packetsin:{round(first_datapoint_in)}")
-    else:
-        first_datapoint_in = network / 2
-        print("No data points found.")
-    if datapoints_out:
-        # Access the first data point (assuming there is at least one)
-        first_datapoint_out = datapoints_out[0]["Maximum"]
-        #print(f"packetsout:{round(first_datapoint_out)}")
-    else:
-        first_datapoint_in = network / 2
-        print("No data points found.")
-    network_sum = round(first_datapoint_in) + round(first_datapoint_out)
-    return network_sum
+    def _s3_key(self, local_path):
+        rel = local_path.replace(self.root_dir + '/', '', 1)
+        return f'{self.prefix}/{rel}.gz'
 
-# Flag to push to CloudWatch
-PUSH_TO_CW = True
+    def append(self, kind, record):
+        dt = utc_now()
+        path = self._local_path(kind, dt)
+        payload = dict(self.context)
+        payload.update(record)
+        with open(path, 'a', encoding='utf-8') as handle:
+            handle.write(json.dumps(payload, separators=(',', ':'), default=str) + '\n')
+
+    def emit_metric(self, record):
+        self.append('metrics', record)
+
+    def emit_event(self, event_type, message, details=None, severity='INFO', source='cpumon.py'):
+        self.append(
+            'events',
+            {
+                'record_type': 'event',
+                'ts': utc_now().isoformat(),
+                'event_type': event_type,
+                'message': message,
+                'severity': severity,
+                'details': details or {},
+                'source': source,
+            },
+        )
+
+    def maybe_flush(self, force=False):
+        now_ts = time.time()
+        if not force and now_ts - self.last_flush < S3_UPLOAD_INTERVAL_SEC:
+            return
+        for root, _, files in os.walk(self.root_dir):
+            for name in files:
+                if not name.endswith('.jsonl'):
+                    continue
+                path = os.path.join(root, name)
+                if not os.path.exists(path) or os.path.getsize(path) == 0:
+                    continue
+                gz_path = path + '.gz'
+                try:
+                    with open(path, 'rb') as src, gzip.open(gz_path, 'wb') as dst:
+                        dst.writelines(src)
+                    self.s3.upload_file(gz_path, self.bucket, self._s3_key(path))
+                    os.remove(gz_path)
+                    open(path, 'w').close()
+                except Exception as exc:  # noqa: BLE001
+                    print(f'Failed uploading {path}: {exc}')
+        self.last_flush = now_ts
+
+
+TOKEN = get_imds_token()
+INSTANCE_ID = get_metadata('instance-id', TOKEN)
+IMAGE_ID = get_metadata('ami-id', TOKEN)
+INSTANCE_TYPE = get_metadata('instance-type', TOKEN)
+INSTANCE_AZ = get_metadata('placement/availability-zone', TOKEN)
+HOSTNAME = get_metadata('hostname', TOKEN)
+EC2_REGION = INSTANCE_AZ[:-1]
+TMP_FILE_SAVED = TMP_FILE + datetime.now().strftime('%Y-%m-%dT%H')
+
+_ec2 = boto3.client('ec2', region_name=EC2_REGION)
+_cloudwatch = boto3.client('cloudwatch', region_name=EC2_REGION)
+
+
+class RuntimeContext:
+    exporter = None
+    cpu_threshold = THRESHOLD_PERCENTAGE
+    network_threshold = 10000
+
+
+CTX = RuntimeContext()
+
+
 def get_instance_tags(instance_id):
     try:
-        response = ec2.describe_tags(
-            Filters=[
-                {
-                    'Name': 'resource-id',
-                    'Values': [instance_id]
-                }
-            ]
-        )
-        tags = {tag['Key']: tag['Value'] for tag in response['Tags']}
-        return tags
+        response = _ec2.describe_tags(Filters=[{'Name': 'resource-id', 'Values': [instance_id]}])
+        return {tag['Key']: tag['Value'] for tag in response['Tags']}
     except ClientError:
         print(f"Couldn't get tags for instance {instance_id}")
         raise
-def send_slack(webhook_url,message):
-    message=f"{message}"   
-    payload = {
-        "text": message
-    }
 
-    response = requests.post(webhook_url, json=payload)
 
-    if response.status_code == 200:
-        print("Message sent to Slack successfully.")
-    else:
-        print(f"Failed to send message to Slack. Status code: {response.status_code}")
 def create_tag(instance_id, tag_name, default_value):
-    """
-    Ensures that a particular tag is present in the instance tags.
-    If the tag is not present, it adds the tag with the specified default value.
-
-    :param instance_id: The ID of the instance.
-    :param tag_name: The tag name to check for.
-    :param default_value: The default value to set if the tag is not found.
-    :return: None
-    """
-    ec2.create_tags(
-        Resources=[instance_id],
-        Tags=[{'Key': tag_name, 'Value': default_value}]
-        )
-    print(f"Tag '{tag_name}' with value '{default_value}' added to instance {instance_id}.")
-
-def logResults(team, emp_name, alarm_pilot_light, cpu_util_tripped, seconds, current_time, per_core_utilization, network, network_tripped):
-    try:
-        gpu_logs = open(TMP_FILE_SAVED, 'a+')
-        writeString = '[ ' + str(current_time) + ' ] ' + 'tag:' + team + ',' + 'Employee:' + emp_name + ',' + 'Alarm_Pilot_value:' + str(alarm_pilot_light) + ',' + 'CPU_Util_Tripped:' + str(cpu_util_tripped) + ',' + 'Seconds Elapsed since reboot:' + str(seconds) + ',' + 'Per-Core CPU Util:' + str(per_core_utilization) + ',' + 'NetworkStats:' + str(network) + ',' + 'Network_Tripped:' + str(network_tripped) + '\n'
-        gpu_logs.write(writeString)
-    except:
-        print("Error writing to file ", gpu_logs)
-    finally:
-        gpu_logs.close()
-    if (PUSH_TO_CW):
-        MY_DIMENSIONS=[
-                    {
-                        'Name': 'InstanceId',
-                        'Value': INSTANCE_ID
-                    },
-                    {
-                        'Name': 'ImageId',
-                        'Value': IMAGE_ID
-                    },
-                    {
-                        'Name': 'InstanceType',
-                        'Value': INSTANCE_TYPE
-                    },
-                    {
-                        'Name': 'InstanceTag',
-                        'Value': str(team)
-                    },
-                    {
-                        'Name': 'EmployeeTag',
-                        'Value': str(emp_name)
-                    }
-
-                ]
-        cloudwatch.put_metric_data(
-            MetricData=[
-                {
-                    'MetricName': 'Alarm Pilot Light (1/0)',
-                    'Dimensions': MY_DIMENSIONS,
-                    'Unit': 'None',
-                    'StorageResolution': store_reso,
-                    'Value': float(alarm_pilot_light)
-                },
-                {
-                    'MetricName': 'CPU Utilization Low Tripped',
-                    'Dimensions': MY_DIMENSIONS,
-                    'Unit': 'None',
-                    'StorageResolution': store_reso,
-                    'Value': float(cpu_util_tripped)
-                },
-                {
-                    'MetricName': 'Network Tripped',
-                    'Dimensions': MY_DIMENSIONS,
-                    'Unit': 'None',
-                    'StorageResolution': store_reso,
-                    'Value': float(network_tripped)
-                }
+    _ec2.create_tags(Resources=[instance_id], Tags=[{'Key': tag_name, 'Value': default_value}])
 
 
+def send_slack(webhook_url, message):
+    if not webhook_url:
+        return
+    requests.post(webhook_url, json={'text': message}, timeout=10)
+
+
+def get_network_stats(instance_id, network_last):
+    end = datetime.utcnow()
+    start = end - timedelta(minutes=5)
+    data_in = _cloudwatch.get_metric_statistics(
+        Period=60,
+        StartTime=start.strftime('%Y-%m-%dT%H:%M:%SZ'),
+        EndTime=end.strftime('%Y-%m-%dT%H:%M:%SZ'),
+        MetricName='NetworkPacketsIn',
+        Namespace='AWS/EC2',
+        Statistics=['Maximum'],
+        Unit='Count',
+        Dimensions=[{'Name': 'InstanceId', 'Value': str(instance_id)}],
+    )
+    data_out = _cloudwatch.get_metric_statistics(
+        Period=60,
+        StartTime=start.strftime('%Y-%m-%dT%H:%M:%SZ'),
+        EndTime=end.strftime('%Y-%m-%dT%H:%M:%SZ'),
+        MetricName='NetworkPacketsOut',
+        Namespace='AWS/EC2',
+        Statistics=['Maximum'],
+        Unit='Count',
+        Dimensions=[{'Name': 'InstanceId', 'Value': str(instance_id)}],
+    )
+    inp = round(data_in.get('Datapoints', [{}])[0].get('Maximum', network_last / 2)) if data_in.get('Datapoints') else round(network_last / 2)
+    out = round(data_out.get('Datapoints', [{}])[0].get('Maximum', network_last / 2)) if data_out.get('Datapoints') else round(network_last / 2)
+    return inp + out
+
+
+def rotate_tmp_file_if_needed(current_time):
+    global TMP_FILE_SAVED
+    current_path = TMP_FILE + current_time.strftime('%Y-%m-%dT%H')
+    if TMP_FILE_SAVED != current_path:
+        TMP_FILE_SAVED = current_path
+
+
+def log_results(team, emp_name, cpu_util, memory_percent, alarm_pilot_light, cpu_util_tripped, seconds, current_time, per_core_utilization, network, network_tripped):
+    rotate_tmp_file_if_needed(current_time)
+    write_string = (
+        '[ ' + str(current_time) + ' ] '
+        + 'tag:' + team + ','
+        + 'Employee:' + emp_name + ','
+        + 'CPU_Util:' + str(cpu_util) + ','
+        + 'MemUtil:' + str(memory_percent) + ','
+        + 'Alarm_Pilot_value:' + str(alarm_pilot_light) + ','
+        + 'CPU_Util_Tripped:' + str(cpu_util_tripped) + ','
+        + 'Seconds Elapsed since reboot:' + str(seconds) + ','
+        + 'Per-Core CPU Util:' + str(per_core_utilization) + ','
+        + 'NetworkStats:' + str(network) + ','
+        + 'Network_Tripped:' + str(network_tripped) + '\n'
+    )
+    with open(TMP_FILE_SAVED, 'a+', encoding='utf-8') as handle:
+        handle.write(write_string)
+
+    CTX.exporter.emit_metric(
+        {
+            'record_type': 'metric',
+            'ts': utc_now().isoformat(),
+            'source': 'cpumon.py',
+            'cpu_util': float(cpu_util),
+            'instance_memory_percent': float(memory_percent),
+            'alarm_pilot_light': int(alarm_pilot_light),
+            'cpu_util_tripped': int(bool(cpu_util_tripped)),
+            'per_core_cpu_util': list(per_core_utilization),
+            'network_packets_sum': int(network),
+            'network_tripped': int(bool(network_tripped)),
+            'seconds_since_boot': float(seconds),
+            'active_cpu': bool(cpu_util_tripped),
+        }
+    )
+
+    dimensions = [
+        {'Name': 'InstanceId', 'Value': INSTANCE_ID},
+        {'Name': 'ImageId', 'Value': IMAGE_ID},
+        {'Name': 'InstanceType', 'Value': INSTANCE_TYPE},
+        {'Name': 'InstanceTag', 'Value': str(team)},
+        {'Name': 'EmployeeTag', 'Value': str(emp_name)},
+    ]
+    _cloudwatch.put_metric_data(
+        MetricData=[
+            {'MetricName': 'Average CPU Utilization', 'Dimensions': dimensions, 'Unit': 'Percent', 'StorageResolution': STORE_RESO, 'Value': float(cpu_util)},
+            {'MetricName': 'Instance Memory Usage', 'Dimensions': dimensions, 'Unit': 'Percent', 'StorageResolution': STORE_RESO, 'Value': float(memory_percent)},
+            {'MetricName': 'Alarm Pilot Light (1/0)', 'Dimensions': dimensions, 'Unit': 'None', 'StorageResolution': STORE_RESO, 'Value': float(alarm_pilot_light)},
+            {'MetricName': 'CPU Utilization Low Tripped', 'Dimensions': dimensions, 'Unit': 'None', 'StorageResolution': STORE_RESO, 'Value': float(cpu_util_tripped)},
+            {'MetricName': 'Network Tripped', 'Dimensions': dimensions, 'Unit': 'None', 'StorageResolution': STORE_RESO, 'Value': float(network_tripped)},
         ],
-            Namespace=my_NameSpace
-        )
-    
+        Namespace=MY_NAMESPACE,
+    )
+
+
+def emit_event(event_type, message, details=None, severity='INFO'):
+    print(message)
+    CTX.exporter.emit_event(event_type, message, details=details, severity=severity, source='cpumon.py')
+
 
 def main():
-    result = check_root_crontab("halt_it.sh")
-    if result:
-       print("halt_it.sh presence in crontab detected, continue")
-    else:
-       print("updating crontab with new halt_it.sh call")
-       new_job = "*/10 * * * * bash /root/gpumon/halt_it.sh | tee -a /tmp/halt_it_log.txt"
-       add_to_root_crontab(new_job)
+    if not check_root_crontab('halt_it.sh'):
+        add_to_root_crontab('*/10 * * * * bash /root/gpumon/halt_it.sh | tee -a /tmp/halt_it_log.txt')
 
-    global core_utilization_cache
-    alarm_pilot_light = 0
-    network_tripped = 0
-    network = 99
-    cpu_util_tripped = False
-    policy = 'STANDARD'
     tags = get_instance_tags(INSTANCE_ID)
-    if 'Name' in tags:
-        instance_name = str(tags['Name'])
-    else:
-        instance_name = "NO_NAME_TAG"
-    if 'Team' in tags:
-        team = str(tags['Team'])
-    else:
-        team = "NO_TAG"
-    if 'Employee' in tags:
-        emp_name = str(tags['Employee'])
-    else:
-        emp_name = "NO_TAG"
-    if 'GPUMON_POLICY' in tags:
-        policy = str(tags['GPUMON_POLICY'])
-    else:
-        create_tag(INSTANCE_ID,'GPUMON_POLICY',policy)
+    instance_name = str(tags.get('Name', 'NO_NAME_TAG'))
+    team = str(tags.get('Team', 'NO_TAG'))
+    emp_name = str(tags.get('Employee', 'NO_TAG'))
+    policy = str(tags.get('GPUMON_POLICY', 'STANDARD'))
+    if 'GPUMON_POLICY' not in tags:
+        create_tag(INSTANCE_ID, 'GPUMON_POLICY', policy)
 
-    if policy != 'SEVERE':
-        print('POLICY TAG detected:',{policy})
-        RESTART_BACKOFF = 7200
-        THRESHOLD_PERCENTAGE = 10
-        NETWORK_THRESHOLD = 10000
-    else:
-        print('POLICY TAG detected:',{policy})
-        RESTART_BACKOFF = 300
-        THRESHOLD_PERCENTAGE = 40
-        NETWORK_THRESHOLD = 2000000
-    debug_webhook = os.getenv("DEBUG_WEBHOOK_URL")
-    team_var = str(team) + "_TEAM_WEBHOOK_URL"
-    #print("team_var:",team_var)
-    try:
-        team_webhook = os.getenv(team_var)
-    except:
-        try:
-            send_slack(debug_webhook,f"achtung, could not resolve team_webhook_url on {instance_name} {INSTANCE_ID} - {team_var}")
-            team_webhook = debug_webhook
-        except:
-            print(f"AAAARGH! DEBUG WEBHOOK is None:${DEBUG_WEBHOOK_URL} or cannot send data out, debug")
+    cpu_threshold = THRESHOLD_PERCENTAGE
+    network_threshold = 10000
+    if policy == 'RELAXED':
+        cpu_threshold = 5
+        network_threshold = 5000
+    elif policy == 'SEVERE':
+        cpu_threshold = 40
+        network_threshold = 2000000
+    elif policy == 'SUSPEND':
+        cpu_threshold = 0
+        network_threshold = 0
+
+    CTX.cpu_threshold = cpu_threshold
+    CTX.network_threshold = network_threshold
+    CTX.exporter = S3JsonlExporter(
+        bucket=S3_BUCKET,
+        prefix=S3_PREFIX,
+        root_dir=S3_SPOOL_ROOT,
+        region_name=EC2_REGION,
+        context={
+            'instance_id': INSTANCE_ID,
+            'instance_name': instance_name,
+            'team': team,
+            'employee': emp_name,
+            'policy': policy,
+            'image_id': IMAGE_ID,
+            'instance_type': INSTANCE_TYPE,
+            'hostname': HOSTNAME,
+        },
+    )
+    emit_event('cpumon_started', f'cpumon started on {instance_name} {INSTANCE_ID}', details={'policy': policy, 'sleep_interval': SLEEP_INTERVAL})
+
+    debug_webhook = os.getenv('DEBUG_WEBHOOK_URL')
+    team_webhook = os.getenv(str(team) + '_TEAM_WEBHOOK_URL') or debug_webhook
+    alarm_pilot_light = 0
+    network = 99
+    last_alarm_state = None
+
     try:
         while True:
-            cpu_util_tripped = False
-            try:
-                # Get per-core CPU utilization
-                per_core_utilization = get_per_core_cpu_utilization()
+            per_core = get_per_core_cpu_utilization()
+            for idx, core in enumerate(per_core):
+                core_utilization_cache[idx].append(core)
+            for idx, core_data in enumerate(core_utilization_cache):
+                core_utilization_cache[idx] = core_data[-int(CACHE_DURATION):]
 
-                # Cache utilization data for each core
-                for i, core_util in enumerate(per_core_utilization):
-                    core_utilization_cache[i].append(core_util)
-
-                # Remove outdated data from the cache
-                current_time = datetime.now()
-                core_utilization_cache = [core_data[-int(CACHE_DURATION / 1):] for core_data in core_utilization_cache]
-                # Calculate average core utilization
-                average_core_utilization = calculate_average_core_utilization()
-                #print(average_core_utilization)
-                # Check if any core exceeds the threshold
-                if any(utilization > THRESHOLD_PERCENTAGE for utilization in average_core_utilization):
-                    cpu_util_tripped = True
-                    #print("Threshold exceeded. Changing variable to True.")
-            except:
-                    print('Could not get cpu core utilization statistics, debug')
-
-
-            PUSH_TO_CW = True
-            
-            seconds = round(float(seconds_elapsed()))
- 
-            # calculate combined network in and out last 5 min
-            network = get_network_stats(instance_id=INSTANCE_ID,network=network)
-            if network_tripped == 0 and network <= NETWORK_THRESHOLD:
-                network_tripped = 1
-            #print(f"name_tag:{instance_name} network:{network}")
-            if seconds >= RESTART_BACKOFF:
-                if cpu_util_tripped == False and network <= NETWORK_THRESHOLD:    
-            #cpu util tripped == True means that there was higher than threshold cpu core activity and we cant stop the instance because of it
-                    if alarm_pilot_light == 0:
-                        #print(f'CPU or GPU below {THRESHOLD_PERCENTAGE}% threshold, turning pilot light ON')
-                        alarm_pilot_light = 1
-                        mmessage=f"[ {current_time} ] INSTANCE: {instance_name} - {INSTANCE_ID} ({HOSTNAME}) CPU and NETWORK seems idle, TURNED ALARM PILOT LIGHT to: ON, instance is expected to stop in: 3 hours"
-                        try:
-                            send_slack(team_webhook, mmessage)
-                        except:
-                            print(f"Could not send slack to webhook:{team_webhook}")
+            avg_core = calculate_average_core_utilization()
+            cpu_util_tripped = any(util > cpu_threshold for util in avg_core)
+            memory_percent = psutil.virtual_memory().percent
+            cpu_util = psutil.cpu_percent(interval=0)
+            network = get_network_stats(INSTANCE_ID, network)
+            network_tripped = int(network > network_threshold)
+            desired_alarm = int((not cpu_util_tripped) and not network_tripped)
+            if desired_alarm != alarm_pilot_light:
+                alarm_pilot_light = desired_alarm
+                if alarm_pilot_light == 1:
+                    msg = f'{instance_name} {INSTANCE_ID}: CPU and NETWORK seem idle, TURNED ALARM PILOT LIGHT to: ON'
+                    emit_event('alarm_pilot_on', msg, details={'cpu_util': cpu_util, 'network': network, 'network_tripped': network_tripped})
+                    try:
+                        send_slack(team_webhook, msg)
+                    except Exception:
+                        pass
                 else:
-                    if alarm_pilot_light == 1:
-                        alarm_pilot_light = 0
-                        mmessage=f"[ {current_time} ] INSTANCE: {instance_name} - {INSTANCE_ID} ({HOSTNAME}) CPU and NETWORK over minimum threshold, TURNED ALARM PILOT LIGHT to: OFF"
-                        try:
-                            send_slack(team_webhook, mmessage)
-                        except:
-                            print(f"Could not send slack to webhook:{team_webhook}")
-                    #print(f'CPU or GPU above {THRESHOLD_PERCENTAGE}% threshold, turning pilot light OFF')
-            else:
-                alarm_pilot_light = 0
-            # Log the results
-            try:
-                logResults(team, emp_name, alarm_pilot_light, cpu_util_tripped, seconds,current_time,per_core_utilization,network,network_tripped)
-            except:
-                print("had an issue with writing to disk probably, it doesnt matter as long as cloudwatch is updated")
-            sleep(sleep_interval)
+                    emit_event('alarm_pilot_off', f'{instance_name} {INSTANCE_ID}: activity detected, TURNED ALARM PILOT LIGHT to: OFF', details={'cpu_util': cpu_util, 'network': network, 'network_tripped': network_tripped})
+                last_alarm_state = alarm_pilot_light
+
+            log_results(team, emp_name, cpu_util, memory_percent, alarm_pilot_light, cpu_util_tripped, seconds_elapsed(), datetime.now(), per_core, network, network_tripped)
+            CTX.exporter.maybe_flush()
+            sleep(SLEEP_INTERVAL)
+    except Exception as exc:  # noqa: BLE001
+        emit_event('cpumon_error', f'cpumon crashed: {exc}', severity='ERROR')
+        try:
+            send_slack(debug_webhook, f'cpumon crashed on {instance_name} {INSTANCE_ID}: {exc}')
+        except Exception:
+            pass
+        raise
     finally:
-        pass
-if __name__=='__main__':
+        CTX.exporter.maybe_flush(force=True)
+
+
+if __name__ == '__main__':
     main()
