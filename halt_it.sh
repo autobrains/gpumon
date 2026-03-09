@@ -56,20 +56,20 @@ if [[ "${DTYPE}" == "" ]] || [[ "${DTYPE}" == "0" ]]; then
     if [ "${POLICY}" != "SEVERE" ]; then
        STEP=500
     else
-       STEP=0
+       STEP=60
     fi
 else
         SEP=12
         FILE="GPU_TEMP_"
         if [ "${DTYPE}" -lt "4" ]; then
            if [ "${POLICY}" == "SEVERE" ]; then
-              STEP=0
+              STEP=60
            else
                 STEP=500 #single GPU gives out single line in log, 500 lines = 2 hours
            fi
         else
            if [ "${POLICY}" == "SEVERE" ]; then
-              STEP=0
+              STEP=60
            else
                 STEP=2000 #4 gpus give 4 lines in log
            fi
