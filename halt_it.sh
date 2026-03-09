@@ -26,6 +26,7 @@ if [ ! -s "/tmp/halt_it.info" ]; then
    TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null)
    AWSREGION=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" -v http://169.254.169.254/latest/meta-data/placement/region/ 2>/dev/null)
    INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" -v http://169.254.169.254/latest/meta-data/instance-id/ 2>/dev/null | cut -d "." -f2)
+   POLICY=$(aws ec2 describe-tags   --filters "Name=resource-id,Values=$INSTANCE_ID" "Name=key,Values=GPUMON_POLICY"   --query "Tags[0].Value"   --output text)
    nvidia-smi --list-gpus 1>/dev/null
    error=$?
    if [ "${error}" != "0" ]; then
@@ -37,10 +38,12 @@ if [ ! -s "/tmp/halt_it.info" ]; then
    echo "INSTANCE_ID=${INSTANCE_ID}" > /tmp/halt_it.info
    echo "DTYPE=${DTYPE}" >> /tmp/halt_it.info
    echo "AWSREGION=${AWSREGION}" >> /tmp/halt_it.info
+   echo "POLICY=${POLICY}" >> /tmp/halt_it.info
   else
    INSTANCE_ID=$(cat /tmp/halt_it.info | grep "INSTANCE_ID" | cut -d "=" -f2)
    DTYPE=$(cat /tmp/halt_it.info | grep DTYPE | cut -d "=" -f2)
    AWSREGION=$(cat /tmp/halt_it.info | grep AWSREGION | cut -d "=" -f2)
+   POLICY=$(cat /tmp/halt_it.info | grep POLICY | cut -d "=" -f2)
 fi
 
 if [[ "${INSTANCE_ID}" == "" ]] || [[ "$(echo ${INSTANCE_ID} | grep -E 'i-[a-f0-9]{8,17}')" == "" ]]; then
@@ -50,14 +53,26 @@ fi
 if [[ "${DTYPE}" == "" ]] || [[ "${DTYPE}" == "0" ]]; then
         SEP=6
     FILE="CPUMON_LOGS_"
-    STEP=500
+    if [ "${POLICY}" != "SEVERE" ]; then
+       STEP=500
+    else
+       STEP=0
+    fi
 else
         SEP=12
         FILE="GPU_TEMP_"
         if [ "${DTYPE}" -lt "4" ]; then
+           if [ "${POLICY}" == "SEVERE" ]; then
+              STEP=0
+           else
                 STEP=500 #single GPU gives out single line in log, 500 lines = 2 hours
+           fi
         else
+           if [ "${POLICY}" == "SEVERE" ]; then
+              STEP=0
+           else
                 STEP=2000 #4 gpus give 4 lines in log
+           fi
         fi
 fi
 echo "[ $(date) ] Is AWS cli installed?"
