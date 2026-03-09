@@ -316,9 +316,9 @@ def main():
         NETWORK_THRESHOLD = 10000
     else:
         print('POLICY TAG detected:',{policy})
-        RESTART_BACKOFF = 600
-        THRESHOLD_PERCENTAGE = 40
-        NETWORK_THRESHOLD = 200000
+        RESTART_BACKOFF = 0
+        THRESHOLD_PERCENTAGE = 5
+        NETWORK_THRESHOLD = 10000
     debug_webhook = os.getenv("DEBUG_WEBHOOK_URL")
     team_var = str(team) + "_TEAM_WEBHOOK_URL"
     #print("team_var:",team_var)
