@@ -389,28 +389,28 @@ def main():
     
     if policy == 'RELAXED':
         print('POLICY TAG detected:',{policy})
-        RESTART_BACKOFF = 7200
-        THRESHOLD_PERCENTAGE = 5
-        GPU_THRESHOLD = 10
-        NETWORK_THRESHOLD = 5000
+        RESTART_BACKOFF = 7200 # will wait 2 hours to even start the evaluation
+        THRESHOLD_PERCENTAGE = 5 #over 5 percent CPU utilization will stop the shutdown sequence
+        GPU_THRESHOLD = 10 # Over 10 percent GPU average utilization will stop the shutdown sequence
+        NETWORK_THRESHOLD = 10000 # Over 10K packets in/out combined will stop the shutdown sequence
     elif policy == "SEVERE":
         print('POLICY TAG detected:',{policy})
-        RESTART_BACKOFF = 0
-        THRESHOLD_PERCENTAGE = 5
-        GPU_THRESHOLD = 2
-        NETWORK_THRESHOLD = 1000
+        RESTART_BACKOFF = 0 # will not wait and will start evaluation immediately upon boot
+        THRESHOLD_PERCENTAGE = 20 #over 20% CPU utilization will stop the shutdown sequence
+        GPU_THRESHOLD = 2 
+        NETWORK_THRESHOLD = 15000 #over 15K packets in/out combined will stop the shutdown sequence
     elif policy == "SUSPEND": #this should keep it running even if no activity is detected
         print('POLICY TAG detected:',{policy})
-        RESTART_BACKOFF = 864000 #10 days backoff then if the box is really quite it can die
-        THRESHOLD_PERCENTAGE = 0
-        GPU_THRESHOLD = 0
-        NETWORK_THRESHOLD = 0
-    else:
-        print('POLICY TAG detected:',{policy})
-        RESTART_BACKOFF = 7200
+        RESTART_BACKOFF = 864000 #10 days backoff then if the box is really quiet it can die
         THRESHOLD_PERCENTAGE = 10
         GPU_THRESHOLD = 10
-        NETWORK_THRESHOLD = 10000
+        NETWORK_THRESHOLD = 15000
+    else:
+        print('POLICY TAG detected:',{policy})
+        RESTART_BACKOFF = 3600 #This is STANDARD policy tag - 1 hour backoff, 10% cPu threshold 10% GPU and 15K network
+        THRESHOLD_PERCENTAGE = 10
+        GPU_THRESHOLD = 10
+        NETWORK_THRESHOLD = 15000
 
     #print("team_var:",team_var)
     debug_webhook = os.getenv("DEBUG_WEBHOOK_URL")
@@ -444,7 +444,7 @@ def main():
                 # Check if any core exceeds the threshold
                 if any(utilization > THRESHOLD_PERCENTAGE for utilization in average_core_utilization):
                     cpu_util_tripped = True
-                    #print("Threshold exceeded. Changing variable to True.")
+                    #print("CPU Threshold exceeded. Changing variable to True.")
             except:
                     print('Could not get cpu core utilization statistics, debug')
 
@@ -469,6 +469,8 @@ def main():
                 network_tripped = 1
             #print(f"name_tag:{instance_name} network:{network}")
             if seconds >= RESTART_BACKOFF:
+                #print("DEBUG:round(float(average_gpu_util)) <= GPU_THRESHOLD and cpu_util_tripped == False and network <= NETWORK_THRESHOLD")
+                #print(f"DEBUG:{round(float(average_gpu_util))} <= {GPU_THRESHOLD} and {cpu_util_tripped} == False and {network} <= {NETWORK_THRESHOLD}")
                 if round(float(average_gpu_util)) <= GPU_THRESHOLD and cpu_util_tripped == False and network <= NETWORK_THRESHOLD:    
             #cpu util tripped == True means that there was higher than threshold cpu core activity and we cant stop the instance because of it
                     if alarm_pilot_light == 0:
