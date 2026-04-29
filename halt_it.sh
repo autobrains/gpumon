@@ -26,7 +26,7 @@ if [ ! -s "/tmp/halt_it.info" ]; then
    TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null)
    AWSREGION=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" -v http://169.254.169.254/latest/meta-data/placement/region/ 2>/dev/null)
    INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" -v http://169.254.169.254/latest/meta-data/instance-id/ 2>/dev/null | cut -d "." -f2)
-   POLICY=$(aws ec2 describe-tags   --filters "Name=resource-id,Values=$INSTANCE_ID" "Name=key,Values=GPUMON_POLICY"   --query "Tags[0].Value"   --output text)
+   POLICY=$(aws ec2 describe-tags --filters "Name=resource-id,Values=$INSTANCE_ID" "Name=key,Values=GPUMON_POLICY" --query "Tags[0].Value" --output text --region $AWSREGION)
    nvidia-smi --list-gpus 1>/dev/null
    error=$?
    if [ "${error}" != "0" ]; then
@@ -75,6 +75,7 @@ else
            fi
         fi
 fi
+echo "[ $(date) ] The instance:${INSTANCE_ID} Tag is:${POLICY} and the STEP therefore is:${STEP}"
 echo "[ $(date) ] Is AWS cli installed?"
 check=$(aws s3 ls 2>&1 | grep "snap")
 if [ "${check}" != "" ]; then
