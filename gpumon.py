@@ -399,6 +399,12 @@ def main():
         THRESHOLD_PERCENTAGE = 20 #over 20% CPU utilization will stop the shutdown sequence
         GPU_THRESHOLD = 2 
         NETWORK_THRESHOLD = 15000 #over 15K packets in/out combined will stop the shutdown sequence
+    elif policy == "SPOT": #this is the most aggressive shutdown, 15 min of inactivity
+        print('POLICY TAG detected:',{policy})
+        RESTART_BACKOFF = 0 #0 seconds backoff - the alert pilot switches to 1 right away if idle
+        THRESHOLD_PERCENTAGE = 20 # under 20% is considered idle
+        GPU_THRESHOLD = 10 # Over 10 percent GPU average utilization will stop the shutdown sequence
+        NETWORK_THRESHOLD = 30000 # Over 30K packets in/out combined will stop the shutdown sequence
     elif policy == "SUSPEND": #this should keep it running even if no activity is detected
         print('POLICY TAG detected:',{policy})
         RESTART_BACKOFF = 864000 #10 days backoff then if the box is really quiet it can die

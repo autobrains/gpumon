@@ -53,23 +53,23 @@ fi
 if [[ "${DTYPE}" == "" ]] || [[ "${DTYPE}" == "0" ]]; then
         SEP=6
     FILE="CPUMON_LOGS_"
-    if [ "${POLICY}" != "SEVERE" ]; then
+    if [ "${POLICY}" != "SPOT" ]; then
        STEP=500
     else
-       STEP=60
+       STEP=90 # 15 minutes idle if SPOT policy
     fi
 else
         SEP=12
         FILE="GPU_TEMP_"
         if [ "${DTYPE}" -lt "4" ]; then
-           if [ "${POLICY}" == "SEVERE" ]; then
-              STEP=60
+           if [ "${POLICY}" == "SPOT" ]; then
+              STEP=90 # 15 minutes idle if SPOT policy
            else
                 STEP=500 #single GPU gives out single line in log, 500 lines = 2 hours
            fi
         else
-           if [ "${POLICY}" == "SEVERE" ]; then
-              STEP=60
+           if [ "${POLICY}" == "SPOT" ]; then
+              STEP=90 # 15 minutes idle if SPOT policy
            else
                 STEP=2000 #4 gpus give 4 lines in log
            fi
@@ -176,6 +176,7 @@ else
    wall "[ $(date) ] ${wall_message}"
    sleep 180
    wall "[ $(date) ] Well, 3 minutes have passed, shutdown is now...Bye Bye"
-   res=$(sudo aws ec2 stop-instances --instance-ids "${INSTANCE_ID}" --region $AWSREGION 2>&1)
+   #res=$(sudo aws ec2 stop-instances --instance-ids "${INSTANCE_ID}" --region $AWSREGION 2>&1)
+   res=$(sudo aws ec2 terminate-instances --instance-ids "${INSTANCE_ID}" --region $AWSREGION 2>&1) #in SPOTs we terminate instead of shutdown
    echo "[ $(date) ] debug: got result for aws stop-instances: ${res}"
 fi
