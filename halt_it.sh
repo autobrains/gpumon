@@ -199,7 +199,10 @@ else
    wall "[ $(date) ] ${wall_message}"
    sleep 180
    wall "[ $(date) ] Well, 3 minutes have passed, shutdown is now...Bye Bye"
-   #res=$(sudo aws ec2 stop-instances --instance-ids "${INSTANCE_ID}" --region $AWSREGION 2>&1)
-   res=$(sudo aws ec2 terminate-instances --instance-ids "${INSTANCE_ID}" --region $AWSREGION 2>&1) #in SPOTs we terminate instead of shutdown
+   if [ "${POLICY}" == "SPOT" ]; then
+      res=$(sudo aws ec2 terminate-instances --instance-ids "${INSTANCE_ID}" --region $AWSREGION 2>&1) #in SPOTs we terminate instead of shutdown
+   else
+      res=$(sudo aws ec2 stop-instances --instance-ids "${INSTANCE_ID}" --region $AWSREGION 2>&1)
+   fi
    echo "[ $(date) ] debug: got result for aws stop-instances: ${res}"
 fi
