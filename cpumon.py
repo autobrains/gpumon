@@ -309,18 +309,37 @@ def main():
     else:
         create_tag(INSTANCE_ID,'GPUMON_POLICY',policy)
 
-    if policy != 'SEVERE':
+    if policy == 'RELAXED':
         print('POLICY TAG detected:',{policy})
-        RESTART_BACKOFF = 7200
+        RESTART_BACKOFF = 7200 # will wait 2 hours to even start the evaluation
+        THRESHOLD_PERCENTAGE = 5 #over 5 percent CPU utilization will stop the shutdown sequence
+        GPU_THRESHOLD = 10 # Over 10 percent GPU average utilization will stop the shutdown sequence
+        NETWORK_THRESHOLD = 10000 # Over 10K packets in/out combined will stop the shutdown sequence
+    elif policy == "SEVERE":
+        print('POLICY TAG detected:',{policy}) 
+        RESTART_BACKOFF = 0 # will not wait and will start evaluation immediately upon boot
+        THRESHOLD_PERCENTAGE = 20 #over 20% CPU utilization will stop the shutdown sequence
+        GPU_THRESHOLD = 2
+        NETWORK_THRESHOLD = 15000 #over 15K packets in/out combined will stop the shutdown sequence
+    elif policy == "SPOT": #this is the most aggressive shutdown, 15 min of inactivity
+        print('POLICY TAG detected:',{policy})
+        RESTART_BACKOFF = 0 #0 seconds backoff - the alert pilot switches to 1 right away if idle
+        THRESHOLD_PERCENTAGE = 20 # under 20% is considered idle
+        GPU_THRESHOLD = 10 # Over 10 percent GPU average utilization will stop the shutdown sequence
+        NETWORK_THRESHOLD = 30000 # Over 30K packets in/out combined will stop the shutdown sequence
+    elif policy == "SUSPEND": #this should keep it running even if no activity is detected
+        print('POLICY TAG detected:',{policy})
+        RESTART_BACKOFF = 864000 #10 days backoff then if the box is really quiet it can die
+        THRESHOLD_PERCENTAGE = 10 
+        GPU_THRESHOLD = 10
+        NETWORK_THRESHOLD = 15000
+    else:   
+        print('POLICY TAG detected:',{policy})
+        RESTART_BACKOFF = 3600 #This is STANDARD policy tag - 1 hour backoff, 10% cPu threshold 10% GPU and 15K network
         THRESHOLD_PERCENTAGE = 10
-        NETWORK_THRESHOLD = 10000
-    else:
-        print('POLICY TAG detected:',{policy})
-        RESTART_BACKOFF = 0
-        THRESHOLD_PERCENTAGE = 5
-        NETWORK_THRESHOLD = 10000
-    debug_webhook = os.getenv("DEBUG_WEBHOOK_URL")
-    team_var = str(team) + "_TEAM_WEBHOOK_URL"
+        GPU_THRESHOLD = 10
+        NETWORK_THRESHOLD = 15000
+        
     #print("team_var:",team_var)
     try:
         team_webhook = os.getenv(team_var)
