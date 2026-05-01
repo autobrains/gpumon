@@ -163,6 +163,11 @@ if command -v nvidia-smi &>/dev/null \\
     # Install NVIDIA Container Toolkit if missing (handles CPU→GPU instance type change).
     if ! dpkg -l nvidia-container-toolkit >/dev/null 2>&1; then
         echo "[\$(date)] gpumon-boot: NVIDIA Container Toolkit missing — installing..."
+        systemctl stop unattended-upgrades apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
+        while fuser /var/lib/apt/lists/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock >/dev/null 2>&1; do
+            echo "[\$(date)] gpumon-boot: waiting for apt lock..."
+            sleep 5
+        done
         distribution=\$(. /etc/os-release && echo "\${ID}\${VERSION_ID}")
         curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \\
             | gpg --batch --no-tty --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg

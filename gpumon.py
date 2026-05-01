@@ -232,6 +232,8 @@ def main() -> None:
             # Capture all per-GPU results in one pass to avoid double-querying
             # and to ensure pilot-light decision uses the same data as the log.
             total_gpu_util = 0.0
+            valid_gpu_count = 0
+            gpu_query_failed = False
             push_to_cw = True
             gpu_results: list[tuple] = []
 
@@ -240,6 +242,7 @@ def main() -> None:
                     handle = nvmlDeviceGetHandleByIndex(i)
                 except NVMLError as err:
                     print(f"GPU {i}: nvmlDeviceGetHandleByIndex failed: {err} — skipping")
+                    gpu_query_failed = True
                     push_to_cw = False
                     gpu_results.append((None, "0", "0", "0.00", "0"))
                     continue
@@ -248,10 +251,14 @@ def main() -> None:
                 util, gpu_util, mem_util, ok3 = _get_utilization(handle)
                 push_to_cw = push_to_cw and ok1 and ok2 and ok3
                 if util is not None:
+                    valid_gpu_count += 1
                     total_gpu_util += float(gpu_util)
                 gpu_results.append((util, gpu_util, mem_util, pow_draw, temp))
 
-            average_gpu_util = total_gpu_util / device_count if device_count else 0.0
+            # Only average over GPUs that actually reported utilization.
+            # Divide by device_count would count failed GPUs as 0% — idle — which
+            # could trigger a false shutdown when the true state is unknown.
+            average_gpu_util = total_gpu_util / valid_gpu_count if valid_gpu_count else 0.0
             seconds = round(seconds_elapsed())
 
             # ── Network ──────────────────────────────────────────────────────
@@ -263,7 +270,7 @@ def main() -> None:
 
             # ── Alarm pilot light ────────────────────────────────────────────
             if seconds >= restart_backoff:
-                if round(average_gpu_util) <= gpu_threshold and not cpu_util_tripped and network <= network_threshold:
+                if round(average_gpu_util) <= gpu_threshold and not cpu_util_tripped and network <= network_threshold and not gpu_query_failed:
                     if alarm_pilot_light == 0:
                         alarm_pilot_light = 1
                         if dm_client and try_record_alert("shutdown_alert", shutdown_cooldown_hours):
