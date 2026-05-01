@@ -100,7 +100,7 @@ echo "[ $(date) ] Instance: ${INSTANCE_ID}  Policy: ${POLICY}  Window: ${WINDOW_
 echo "[ $(date) ] Checking AWS CLI..."
 if ! timeout 30 aws sts get-caller-identity --region "${AWSREGION}" &>/dev/null; then
     echo "[ $(date) ] AWS CLI not working, attempting reinstall..."
-    DEBIAN_FRONTEND=noninteractive timeout 120 apt install -y awscli || \
+    DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y awscli || \
         timeout 120 python3 -m pip install --upgrade awscli boto3 botocore || true
 fi
 
@@ -113,7 +113,7 @@ echo "[ $(date) ] Getting creds from SM (secret: ${SECRET_ID} region: ${SECRET_R
 
 # Ensure jq is available for robust JSON parsing
 if ! command -v jq &>/dev/null; then
-    DEBIAN_FRONTEND=noninteractive apt-get install -y jq -q 2>/dev/null || true
+    DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y jq -q 2>/dev/null || true
 fi
 
 secret_json=$(aws secretsmanager get-secret-value \

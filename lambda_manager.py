@@ -41,8 +41,8 @@ def install_commands(branch: str) -> list[str]:
     """Clone the given branch and run autoinstall.sh."""
     branch = _validate_branch(branch)
     return [
-        "sudo apt-get update -q",
-        "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y git",
+        "sudo apt-get -o DPkg::Lock::Timeout=120 update -q",
+        "sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y git",
         f"sudo rm -f {SENTINEL}",
         f"sudo rm -rf {GPUMON_DIR}",
         f"sudo git clone --branch {branch} {GPUMON_REPO} {GPUMON_DIR}",
@@ -96,7 +96,7 @@ def migrate_commands(branch: str) -> list[str]:
         f"sudo rm -f {SENTINEL}",
         # ── Fresh clone at the Docker branch ──
         f"sudo rm -rf {GPUMON_DIR}",
-        "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y git -q",
+        "sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y git -q",
         f"sudo git clone --branch {branch} {GPUMON_REPO} {GPUMON_DIR}",
         # ── Full Docker install ──
         f"sudo bash {GPUMON_DIR}/autoinstall.sh",

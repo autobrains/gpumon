@@ -16,8 +16,8 @@ fi
 echo "[autoinstall] Starting gpumon installation from $REPO_DIR"
 
 # ── System packages ───────────────────────────────────────────────────────────
-apt-get update -q
-apt-get install -y git cron curl gnupg ca-certificates
+apt-get -o DPkg::Lock::Timeout=120 update -q
+apt-get -o DPkg::Lock::Timeout=120 install -y git cron curl gnupg ca-certificates
 
 # ── Docker ────────────────────────────────────────────────────────────────────
 if ! command -v docker &>/dev/null; then
@@ -28,7 +28,7 @@ fi
 
 if ! docker compose version &>/dev/null; then
     echo "[autoinstall] Installing docker compose plugin..."
-    apt-get install -y docker-compose-plugin
+    apt-get -o DPkg::Lock::Timeout=120 install -y docker-compose-plugin
 fi
 
 # Wait up to 30 s for Docker daemon
@@ -51,8 +51,8 @@ if $HAS_GPU; then
     curl -fsSL "https://nvidia.github.io/libnvidia-container/${distribution}/libnvidia-container.list" \
         | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
         | tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
-    apt-get update -q
-    apt-get install -y nvidia-container-toolkit
+    apt-get -o DPkg::Lock::Timeout=120 update -q
+    apt-get -o DPkg::Lock::Timeout=120 install -y nvidia-container-toolkit
     nvidia-ctk runtime configure --runtime=docker
     systemctl restart docker
     timeout 30 bash -c 'until docker info &>/dev/null 2>&1; do sleep 1; done'
