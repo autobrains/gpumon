@@ -144,21 +144,23 @@ def get_network_stats(cw_client: Any, instance_id: str, prev_network: float) -> 
             Unit="Count",
             Dimensions=[{"Name": "InstanceId", "Value": instance_id}],
         )
-        pts = data.get("Datapoints", [])
+        # GetMetricStatistics does not guarantee chronological order — sort first.
+        pts = sorted(data.get("Datapoints", []), key=lambda p: p["Timestamp"], reverse=True)
         return pts[0]["Maximum"] if pts else None
 
     packets_in = _query("NetworkPacketsIn")
     packets_out = _query("NetworkPacketsOut")
 
-    # Fallback: use half the previous total to avoid false idle on missing data.
-    # On the very first call prev_network=99, so the fallback is 49 — safely non-zero.
-    fallback = max(prev_network / 2, 1.0)
+    # When CW data is missing treat the network as active (not idle).
+    # Halving toward zero on repeated misses would eventually trigger a false shutdown.
+    # A large sentinel value safely clears every policy threshold.
+    _MISSING = 1_000_000.0
     if packets_in is None:
-        print("NetworkPacketsIn: no datapoints, using fallback")
-        packets_in = fallback
+        print("NetworkPacketsIn: no datapoints — treating as active to prevent false idle")
+        packets_in = _MISSING
     if packets_out is None:
-        print("NetworkPacketsOut: no datapoints, using fallback")
-        packets_out = fallback
+        print("NetworkPacketsOut: no datapoints — treating as active to prevent false idle")
+        packets_out = _MISSING
 
     return round(packets_in) + round(packets_out)
 

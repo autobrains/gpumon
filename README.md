@@ -62,7 +62,7 @@ sudo bash /root/gpumon/autoinstall.sh
 | Tag | Required | Values / Default | Purpose |
 |-----|----------|-----------------|---------|
 | `GPUMON` | **Yes** | see state machine below | Drives Lambda fleet actions |
-| `GPUMON_BRANCH` | No | `main` / `feature/dockerize` | Branch to clone during install or migrate |
+| `GPUMON_BRANCH` | No | default: `feature/dockerize` | Branch to clone during install or migrate; update `DOCKER_BRANCH` constant after merge |
 | `GPUMON_POLICY` | No | `STANDARD` *(default)* | Idle-shutdown sensitivity |
 | `Team` | No | e.g. `ML_TEAM` | Determines Slack team webhook; CloudWatch dimension |
 | `Employee` | No | Name or `user@email.com` | Slack DM recipient for personal alerts |
@@ -106,7 +106,7 @@ sudo bash /root/gpumon/autoinstall.sh
 
 | Tag value | Lambda action |
 |-----------|--------------|
-| `install` | Clone `GPUMON_BRANCH` (default `main`), run `autoinstall.sh` |
+| `install` | Clone `GPUMON_BRANCH` (default `feature/dockerize`), run `autoinstall.sh` |
 | `PENDING_SSM` | Retry install (SSM agent was absent on first attempt) |
 | `ACTIVE` | Health-check; set `FAILED` if not running |
 | `INACTIVE` | Health-check when instance comes back up |
@@ -269,8 +269,8 @@ Set `GPUMON_BRANCH` on an instance to override which git branch is cloned. Defau
 
 | Action | Default branch |
 |--------|---------------|
-| `install` | `main` |
-| `MIGRATE` | `feature/dockerize` (update `DOCKER_BRANCH` constant when merged) |
+| `install` | `feature/dockerize` (update `DOCKER_BRANCH` constant after merge) |
+| `MIGRATE` | `feature/dockerize` (update `DOCKER_BRANCH` constant after merge) |
 
 ---
 

@@ -486,6 +486,12 @@ def lambda_handler(event, context):
                     else:
                         print(f"[{instance_id}] MIGRATE skipped — instance not running")
 
+                elif tag_value == "DELETE":
+                    if state == "running":
+                        handle_delete(ec2, ssm, instance_id)
+                    else:
+                        print(f"[{instance_id}] DELETE pending — instance not running, will retry when running")
+
                 elif state != "running" and tag_value not in ("", "INACTIVE"):
                     update_tag(ec2, instance_id, "INACTIVE")
 
@@ -495,12 +501,12 @@ def lambda_handler(event, context):
                 elif state == "running" and tag_value in ("ACTIVE", "INACTIVE"):
                     handle_check(ec2, ssm, instance_id)
 
-                elif tag_value == "DELETE":
-                    handle_delete(ec2, ssm, instance_id)
-
                 elif tag_value == "NOT_FIXED":
                     print(f"[{instance_id}] NOT_FIXED — skipping until manually resolved")
 
+            except ValueError as e:
+                print(f"[{region}][{instance_id}] invalid GPUMON_BRANCH tag — {e}")
+                update_tag(ec2, instance_id, "FAILED")
             except ClientError as e:
                 if e.response["Error"]["Code"] == "RequestLimitExceeded":
                     print(f"[{region}] rate limited — backing off 5 s")

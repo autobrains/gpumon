@@ -17,7 +17,7 @@ All fleet management is done by setting the `GPUMON` EC2 tag. The Lambda fleet m
 
 1. Ensure the instance has the `EC2IAMRole` instance profile attached (the Lambda will attach it if missing, but the instance must be running).
 2. Set `GPUMON = install` on the instance.
-3. Optionally set `GPUMON_BRANCH = feature/dockerize` to install the Docker branch instead of `main`.
+3. `GPUMON_BRANCH` defaults to `feature/dockerize` for installs. Set it explicitly only if you need a different branch.
 4. Lambda installs Docker, builds the container, starts it, and sets the tag to `ACTIVE`.
 
 ### Remove gpumon from an instance

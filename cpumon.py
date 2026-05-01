@@ -32,6 +32,7 @@ TMP_FILE_PREFIX = "/tmp/CPUMON_LOGS_"
 SLEEP_INTERVAL = 10
 STORE_RESO = 60
 CACHE_DURATION = 300  # seconds of CPU history to keep
+POLICY_REFRESH_LOOPS = 60   # re-read GPUMON_POLICY tag every ~10 min
 
 
 def _log_results(
@@ -134,7 +135,22 @@ def main() -> None:
     network_tripped   = 0
     network: float    = 99.0
 
+    loop_count = 0
     while True:
+        loop_count += 1
+        if loop_count % POLICY_REFRESH_LOOPS == 0:
+            try:
+                fresh_tags = get_instance_tags(ec2, instance_id)
+                new_policy = fresh_tags.get("GPUMON_POLICY", policy)
+                if new_policy != policy:
+                    policy = new_policy
+                    cfg = get_policy_config(policy)
+                    restart_backoff   = cfg["restart_backoff"]
+                    cpu_threshold     = cfg["cpu_threshold"]
+                    network_threshold = cfg["network_threshold"]
+            except Exception as exc:
+                print(f"policy refresh error: {exc}")
+
         current_time = datetime.now()
         log_file = TMP_FILE_PREFIX + current_time.strftime("%Y-%m-%dT%H")
         cpu_util_tripped = False
