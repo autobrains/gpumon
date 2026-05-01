@@ -64,7 +64,7 @@ sudo bash /root/gpumon/autoinstall.sh
 | `GPUMON` | **Yes** | see state machine below | Drives Lambda fleet actions |
 | `GPUMON_BRANCH` | No | default: `feature/dockerize` | Branch to clone during install or migrate; update `DOCKER_BRANCH` constant after merge |
 | `GPUMON_POLICY` | No | `STANDARD` *(default)* | Idle-shutdown sensitivity |
-| `Team` | No | e.g. `ML_TEAM` | Determines Slack team webhook; CloudWatch dimension |
+| `Team` | No | e.g. `ML_TEAM` | CloudWatch dimension |
 | `Employee` | No | Name or `user@email.com` | Slack DM recipient for personal alerts |
 | `PAGE_EMPLOYEE` | No | `True` *(default)* / `False` | Set to `False` to suppress employee DMs |
 | `Name` | No | human-readable name | Used in Slack alert messages instead of instance ID |
@@ -148,8 +148,6 @@ Copy `.env.example` to `.env` in the repo directory before starting the containe
 | `MEMORY_ALERT_USED_PCT` | `90` | DM employee when RAM usage exceeds this % |
 | `ALERT_COOLDOWN_HOURS` | `12` | Minimum hours between repeat disk/memory DMs |
 | `SHUTDOWN_ALERT_COOLDOWN_HOURS` | `4` | Minimum hours between repeat idle-shutdown DMs |
-| `DEBUG_WEBHOOK_URL` | — | Fallback Slack webhook (used if team webhook is missing) |
-| `<TEAM>_TEAM_WEBHOOK_URL` | — | Team channel webhook, e.g. `ML_TEAM_TEAM_WEBHOOK_URL` |
 
 ---
 
@@ -168,8 +166,7 @@ The `Employee` EC2 tag can be an email address (`user@company.com`) for exact lo
 
 | Event | Recipient | Cooldown |
 |-------|-----------|---------|
-| Alarm pilot light ON (instance idle, will stop) | Team channel + Employee DM | 4 h per DM |
-| Alarm pilot light OFF (activity resumed) | Team channel only | — |
+| Alarm pilot light ON (instance idle, will stop) | Employee DM | 4 h |
 | Disk free < `DISK_ALERT_FREE_PCT` | Employee DM | 12 h |
 | Memory used > `MEMORY_ALERT_USED_PCT` | Employee DM | 12 h |
 

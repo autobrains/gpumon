@@ -74,44 +74,19 @@ if [ -f "${REPO_DIR}/.env" ]; then
 else
     echo "[autoinstall] .env not found — generating from Secrets Manager..."
 
-    _IMDSv2_TOKEN=$(curl -s --max-time 5 -X PUT "http://169.254.169.254/latest/api/token" \
-        -H "X-aws-ec2-metadata-token-ttl-seconds: 60" 2>/dev/null)
-    _REGION=$(curl -s --max-time 5 -H "X-aws-ec2-metadata-token: $_IMDSv2_TOKEN" \
-        http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null)
-    _INSTANCE_ID=$(curl -s --max-time 5 -H "X-aws-ec2-metadata-token: $_IMDSv2_TOKEN" \
-        http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null)
-    _TEAM=$(aws ec2 describe-tags \
-        --filters "Name=resource-id,Values=${_INSTANCE_ID}" "Name=key,Values=Team" \
-        --query "Tags[0].Value" --output text --region "${_REGION}" 2>/dev/null || true)
-
     # Secret IDs — callers may override via env vars before invoking autoinstall.sh
     _SLACK_SECRET_ID="${GPUMON_SLACK_SECRET_ID:-IT/SLACK_BOT_TOKEN}"
     _SLACK_SECRET_REGION="${GPUMON_SLACK_SECRET_REGION:-eu-west-1}"
     _INST_SECRET_ID="${GPUMON_SECRET_ID:-AB/InstanceRole}"
     _INST_SECRET_REGION="${GPUMON_SECRET_REGION:-eu-west-1}"
 
-    # Team webhook (e.g. IT/TEAM/IT_TEAM_WEBHOOK_URL); fall back to debug webhook
-    _TEAM_WEBHOOK=""
-    if [ -n "$_TEAM" ] && [ "$_TEAM" != "None" ]; then
-        _TEAM_WEBHOOK=$(aws secretsmanager get-secret-value \
-            --secret-id "IT/TEAM/${_TEAM}_TEAM_WEBHOOK_URL" \
-            --query "SecretString" --output text --region "${_REGION}" 2>/dev/null || true)
-        [ "$_TEAM_WEBHOOK" = "None" ] && _TEAM_WEBHOOK=""
-    fi
-    _DEBUG_WEBHOOK=$(aws secretsmanager get-secret-value \
-        --secret-id "IT/TEAM/DEBUG_WEBHOOK_URL" \
-        --query "SecretString" --output text --region "${_REGION}" 2>/dev/null || true)
-    [ "$_DEBUG_WEBHOOK" = "None" ] && _DEBUG_WEBHOOK=""
-
     {
         echo "GPUMON_SLACK_SECRET_ID=${_SLACK_SECRET_ID}"
         echo "GPUMON_SLACK_SECRET_REGION=${_SLACK_SECRET_REGION}"
         echo "GPUMON_SECRET_ID=${_INST_SECRET_ID}"
         echo "GPUMON_SECRET_REGION=${_INST_SECRET_REGION}"
-        [ -n "$_DEBUG_WEBHOOK" ]  && echo "DEBUG_WEBHOOK_URL=${_DEBUG_WEBHOOK}"
-        [ -n "$_TEAM_WEBHOOK" ]   && echo "${_TEAM}_TEAM_WEBHOOK_URL=${_TEAM_WEBHOOK}"
     } > "${REPO_DIR}/.env"
-    echo "[autoinstall] .env written (team: ${_TEAM:-unknown}, debug_webhook: ${_DEBUG_WEBHOOK:+set})"
+    echo "[autoinstall] .env written"
 fi
 
 # ── Build and start container ─────────────────────────────────────────────────

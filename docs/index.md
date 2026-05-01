@@ -63,7 +63,7 @@ From that point, the Lambda health-checks the instance on every sweep. If it det
 gpumon.py / cpumon.py
   └── every 10 s: is GPU/CPU below threshold AND network quiet?
         └── yes for restart_backoff seconds → alarm_pilot_light = 1
-              └── Slack: team channel alert + employee DM (4 h cooldown)
+              └── Slack: employee DM (4 h cooldown)
 
 halt_it.sh (host crontab, every 10 min)
   └── collects log lines timestamped within policy window
@@ -82,8 +82,7 @@ Alerts reach the right person automatically. The `Employee` EC2 tag (email or di
 
 | Event | Who gets it | Cooldown |
 |-------|------------|---------|
-| Instance idle, will stop in ~3 h | Team channel + Employee DM | 4 h |
-| Activity resumed | Team channel only | — |
+| Instance idle, will stop in ~3 h | Employee DM | 4 h |
 | Disk < threshold | Employee DM | 12 h |
 | Memory > threshold | Employee DM | 12 h |
 

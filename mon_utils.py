@@ -17,7 +17,6 @@ from urllib.request import Request, urlopen
 
 import boto3
 import psutil
-import requests
 
 if TYPE_CHECKING:
     from slack_dm import SlackDMClient
@@ -96,33 +95,6 @@ def create_tag(ec2_client: Any, instance_id: str, tag_name: str, default_value: 
         Tags=[{"Key": tag_name, "Value": default_value}],
     )
     print(f"Tag '{tag_name}' = '{default_value}' added to {instance_id}.")
-
-
-# ── Slack ─────────────────────────────────────────────────────────────────────
-
-def resolve_webhooks(team: str) -> tuple[str | None, str | None]:
-    """Return (team_webhook, debug_webhook). Either may be None if not configured."""
-    debug_webhook = os.getenv("DEBUG_WEBHOOK_URL")
-    team_env_key = f"{team}_TEAM_WEBHOOK_URL"
-    team_webhook = os.getenv(team_env_key)
-    if team_webhook is None:
-        print(f"WARNING: env var {team_env_key} not set; falling back to DEBUG_WEBHOOK_URL")
-        team_webhook = debug_webhook
-    if team_webhook is None:
-        print("WARNING: neither team webhook nor DEBUG_WEBHOOK_URL is configured — Slack alerts disabled")
-    return team_webhook, debug_webhook
-
-
-def send_slack(webhook_url: str | None, message: str) -> None:
-    if not webhook_url:
-        print(f"send_slack: no webhook URL, dropping message: {message[:80]}")
-        return
-    try:
-        resp = requests.post(webhook_url, json={"text": message}, timeout=10)
-        if resp.status_code != 200:
-            print(f"Slack returned {resp.status_code}: {resp.text[:120]}")
-    except Exception as exc:
-        print(f"send_slack error: {exc}")
 
 
 # ── Network ───────────────────────────────────────────────────────────────────

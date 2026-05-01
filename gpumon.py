@@ -32,9 +32,7 @@ from mon_utils import (
     get_network_stats,
     get_per_core_cpu_utilization,
     get_policy_config,
-    resolve_webhooks,
     seconds_elapsed,
-    send_slack,
     try_record_alert,
 )
 
@@ -184,8 +182,6 @@ def main() -> None:
 
     shutdown_cooldown_hours = float(os.getenv("SHUTDOWN_ALERT_COOLDOWN_HOURS", "4"))
 
-    team_webhook, _ = resolve_webhooks(team)
-
     # Slack DM client — None if secret not configured or unreachable
     slack_secret_id     = os.getenv("GPUMON_SLACK_SECRET_ID", "AB/SlackBotToken")
     slack_secret_region = os.getenv("GPUMON_SLACK_SECRET_REGION", os.getenv("GPUMON_SECRET_REGION", "eu-west-1"))
@@ -262,12 +258,6 @@ def main() -> None:
                 if round(average_gpu_util) <= gpu_threshold and not cpu_util_tripped and network <= network_threshold:
                     if alarm_pilot_light == 0:
                         alarm_pilot_light = 1
-                        # Team channel notification (always)
-                        send_slack(team_webhook,
-                                   f"[ {current_time} ] INSTANCE: {instance_name} - {instance_id} ({hostname}) "
-                                   f"CPU, GPU and NETWORK seems idle, TURNED ALARM PILOT LIGHT to: ON, "
-                                   f"instance is expected to stop in: 3 hours")
-                        # Personal DM to employee (rate-limited, not on SPOT)
                         if dm_client and try_record_alert("shutdown_alert", shutdown_cooldown_hours):
                             dm_client.send_dm(
                                 emp_name,
@@ -277,10 +267,6 @@ def main() -> None:
                 else:
                     if alarm_pilot_light == 1:
                         alarm_pilot_light = 0
-                        # Team channel only — no DM to employee for OFF transition
-                        send_slack(team_webhook,
-                                   f"[ {current_time} ] INSTANCE: {instance_name} - {instance_id} ({hostname}) "
-                                   f"CPU, GPU and NETWORK over minimum threshold, TURNED ALARM PILOT LIGHT to: OFF")
             else:
                 alarm_pilot_light = 0
 

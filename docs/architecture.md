@@ -84,8 +84,7 @@ GPU metrics loop. Runs inside the container on GPU instances.
 - Maintains a rolling 5-minute window of per-core CPU utilisation.
 - Tracks `alarm_pilot_light` (0/1): set to 1 when GPU, CPU, and network are all below policy thresholds for the configured backoff period.
 - Log line format is fixed for `halt_it.sh` compatibility: the `Alarm_Pilot_value` field falls at colon-split index 12.
-- On pilot light ON: sends team Slack webhook + employee DM (4 h cooldown, suppressed on SPOT).
-- On pilot light OFF: team webhook only.
+- On pilot light ON: sends employee DM (4 h cooldown, suppressed on SPOT/PAGE_EMPLOYEE=False).
 
 ### `cpumon.py`
 

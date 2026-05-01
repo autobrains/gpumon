@@ -46,7 +46,7 @@ Set `GPUMON_POLICY = SUSPEND` on the instance. The restart backoff becomes 10 da
 
 ### Disable employee DMs for an instance
 
-Set `PAGE_EMPLOYEE = False`. Team channel notifications continue; only the personal DM is suppressed. Useful for shared or unattended instances.
+Set `PAGE_EMPLOYEE = False`. The idle DM is suppressed. Useful for shared or unattended instances.
 
 ---
 
@@ -196,5 +196,3 @@ aws ec2 describe-tags \
 | `MEMORY_ALERT_USED_PCT` | `90` | Alert threshold — memory used % |
 | `ALERT_COOLDOWN_HOURS` | `12` | Hours between disk/memory repeat DMs |
 | `SHUTDOWN_ALERT_COOLDOWN_HOURS` | `4` | Hours between idle-shutdown repeat DMs |
-| `DEBUG_WEBHOOK_URL` | — | Fallback Slack webhook |
-| `<TEAM>_TEAM_WEBHOOK_URL` | — | Team channel webhook |
