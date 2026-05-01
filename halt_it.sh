@@ -84,26 +84,17 @@ fi
 if [[ -z "$DTYPE" || "$DTYPE" == "0" ]]; then
     SEP=6
     FILE="CPUMON_LOGS_"
-    DEFAULT_STEP=500
 else
     SEP=12
     FILE="GPU_TEMP_"
-    if [ "$DTYPE" -lt 4 ]; then
-        DEFAULT_STEP=500
-    else
-        DEFAULT_STEP=2000
-    fi
 fi
 
+# Time-based idle window — SPOT/SEVERE get 15 min; everything else 2 h
 case "$POLICY" in
-    SPOT|SEVERE)
-        STEP=90
-        ;;
-    *)
-        STEP=$DEFAULT_STEP
-        ;;
+    SPOT|SEVERE) WINDOW_SECONDS=$((15 * 60)) ;;
+    *)           WINDOW_SECONDS=$((2 * 60 * 60)) ;;
 esac
-echo "[ $(date) ] Instance: ${INSTANCE_ID}  Policy: ${POLICY}  Step: ${STEP}"
+echo "[ $(date) ] Instance: ${INSTANCE_ID}  Policy: ${POLICY}  Window: ${WINDOW_SECONDS}s"
 
 # ── AWS CLI health check ──────────────────────────────────────────────────────
 echo "[ $(date) ] Checking AWS CLI..."
@@ -160,39 +151,69 @@ please wait a couple of minutes and restart it from the AWS console, or type:
 to stop the shutdown now. The shutdown pause will last 2 hours.
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
 
-# ── Find latest log file ──────────────────────────────────────────────────────
-filename=$(ls -lit /tmp/${FILE}* 2>/dev/null | head -1 | rev | cut -d " " -f1 | rev)
-if [ "${filename}" == "" ]; then
-    NOGO="TRUE"
-    REASON="LOG_NOT_FOUND"
-else
-    NOGO="FALSE"
-    if [ "$(wc -l < "${filename}")" -lt "${STEP}" ]; then
-        NOGO="TRUE"
-        REASON="LOG_EXISTS_BUT_NOT_ENOUGH_DATA_IN_IT_SO_FAR:($(wc -l < "${filename}"))_LINES"
-    fi
-fi
+# ── Collect log lines within the idle window ──────────────────────────────────
+# Log files rotate hourly and are named <PREFIX>YYYY-MM-DDTHH.
+# Build the list of candidate files by stepping through each hour in the window,
+# then filter lines by the embedded ISO timestamp using awk string comparison
+# (ISO format is lexicographically ordered so >= works without date arithmetic).
+now=$(date +%s)
+cutoff=$((now - WINDOW_SECONDS))
+cutoff_str=$(date -d "@${cutoff}" +'%Y-%m-%d %H:%M:%S')
 
-# ── Analyse log ───────────────────────────────────────────────────────────────
-if [ "${NOGO}" == "FALSE" ]; then
-    check=$(tail -"${STEP}" "${filename}" | cut -d ":" -f"${SEP}" | sort | uniq -c | grep "CPU_Util")
-    if [ "${check}" == "" ]; then
-        NOGO="TRUE"
-        REASON="LOG_FILE_EXISTS_BUT_NO_VALID_DATA:${check}"
+candidate_files=""
+t=$cutoff
+while [ "$t" -le "$((now + 3600))" ]; do
+    f="/tmp/${FILE}$(date -d @${t} +'%Y-%m-%dT%H')"
+    [ -f "$f" ] && candidate_files="${candidate_files} ${f}"
+    t=$((t + 3600))
+done
+
+if [ -z "${candidate_files}" ]; then
+    NOGO="TRUE"
+    REASON="NO_LOG_FILES_FOUND"
+else
+    # awk substr(line,3,19) extracts "YYYY-MM-DD HH:MM:SS" from "[ YYYY-MM-DD HH:MM:SS..."
+    # shellcheck disable=SC2086
+    window_lines=$(cat ${candidate_files} 2>/dev/null | awk -v cutoff="${cutoff_str}" '{
+        ts = substr($0, 3, 19)
+        if (ts >= cutoff) print
+    }')
+
+    line_count=$(echo "${window_lines}" | grep -c .)
+
+    # Require at least 50% of the expected sample count (1 line/10 s per GPU process,
+    # or 1 line/10 s for CPU-only).  Multi-GPU instances write DTYPE lines per tick.
+    if [ "${DTYPE}" -gt 0 ]; then
+        min_lines=$(( WINDOW_SECONDS / 20 * DTYPE ))
     else
-        result=$(tail -"${STEP}" "${filename}" | cut -d ":" -f"${SEP}" | sort | uniq -c | grep "0,CPU_Util_Tripped")
-        if [ "${result}" == "" ]; then
-            positive=$(tail -"${STEP}" "${filename}" | cut -d ":" -f"${SEP}" | sort | uniq -c | grep "1,CPU_Util_Tripped")
-            if [ "${positive}" == "" ]; then
-                NOGO="TRUE"
-                REASON="ALARM_WASNT_ON_DURING_LAST_2_HOURS,INCONCLUSIVE,DEBUG:${positive} result:${result}"
-            else
-                NOGO="FALSE"
-                REASON="WE_GOT_PILOT_ONLY_FOR_2_HOURS_ITS_A_GO:${positive} result:${result}"
-            fi
-        else
+        min_lines=$(( WINDOW_SECONDS / 20 ))
+    fi
+    echo "[ $(date) ] Lines in window: ${line_count}  min required: ${min_lines}"
+
+    if [ "${line_count}" -lt "${min_lines}" ]; then
+        NOGO="TRUE"
+        REASON="INSUFFICIENT_DATA:${line_count}_lines_in_${WINDOW_SECONDS}s_window_(need_${min_lines})"
+    else
+        # ── Analyse window lines ───────────────────────────────────────────────
+        check=$(echo "${window_lines}" | cut -d ":" -f"${SEP}" | sort | uniq -c | grep "CPU_Util")
+        if [ "${check}" == "" ]; then
             NOGO="TRUE"
-            REASON="DATA_IS_OK_BUT_GOT_ACTIVITY_SPIKE:${check}"
+            REASON="LOG_EXISTS_BUT_NO_VALID_DATA"
+        else
+            result=$(echo "${window_lines}" | cut -d ":" -f"${SEP}" | sort | uniq -c | grep "0,CPU_Util_Tripped")
+            if [ "${result}" == "" ]; then
+                positive=$(echo "${window_lines}" | cut -d ":" -f"${SEP}" | sort | uniq -c | grep "1,CPU_Util_Tripped")
+                if [ "${positive}" == "" ]; then
+                    NOGO="TRUE"
+                    REASON="ALARM_WASNT_ON_DURING_WINDOW,INCONCLUSIVE"
+                else
+                    NOGO="FALSE"
+                    REASON="PILOT_ON_FOR_FULL_${WINDOW_SECONDS}s_WINDOW:${positive}"
+                fi
+            else
+                NOGO="TRUE"
+                REASON="ACTIVITY_SPIKE_IN_WINDOW:${result}"
+            fi
         fi
     fi
 fi
