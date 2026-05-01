@@ -22,59 +22,82 @@ else
         exit 1
     fi
 fi
-if [ ! -s "/tmp/halt_it.info" ]; then
-   TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null)
-   AWSREGION=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" -v http://169.254.169.254/latest/meta-data/placement/region/ 2>/dev/null)
-   INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" -v http://169.254.169.254/latest/meta-data/instance-id/ 2>/dev/null | cut -d "." -f2)
-   POLICY=$(aws ec2 describe-tags   --filters "Name=resource-id,Values=$INSTANCE_ID" "Name=key,Values=GPUMON_POLICY"   --query "Tags[0].Value"   --output text)
-   nvidia-smi --list-gpus 1>/dev/null
-   error=$?
-   if [ "${error}" != "0" ]; then
-      DTYPE="0"
-   else
-     DTYPE=$(nvidia-smi --list-gpus | wc -l)
-   fi
+HALT_FILE=/tmp/halt_it.info
 
-   echo "INSTANCE_ID=${INSTANCE_ID}" > /tmp/halt_it.info
-   echo "DTYPE=${DTYPE}" >> /tmp/halt_it.info
-   echo "AWSREGION=${AWSREGION}" >> /tmp/halt_it.info
-   echo "POLICY=${POLICY}" >> /tmp/halt_it.info
-  else
-   INSTANCE_ID=$(cat /tmp/halt_it.info | grep "INSTANCE_ID" | cut -d "=" -f2)
-   DTYPE=$(cat /tmp/halt_it.info | grep DTYPE | cut -d "=" -f2)
-   AWSREGION=$(cat /tmp/halt_it.info | grep AWSREGION | cut -d "=" -f2)
-   POLICY=$(cat /tmp/halt_it.info | grep POLICY | cut -d "=" -f2)
+# Function to populate vars from IMDS + EC2 tags
+fetch_metadata() {
+    TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
+        -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null)
+    AWSREGION=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+        http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null)
+    INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+        http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null)
+    POLICY=$(aws ec2 describe-tags \
+        --filters "Name=resource-id,Values=$INSTANCE_ID" "Name=key,Values=GPUMON_POLICY" \
+        --query "Tags[0].Value" --output text --region "$AWSREGION")
+
+    if nvidia-smi --list-gpus >/dev/null 2>&1; then
+        DTYPE=$(nvidia-smi --list-gpus | wc -l)
+    else
+        DTYPE="0"
+    fi
+}
+
+if [ ! -s "$HALT_FILE" ]; then
+    fetch_metadata
+    {
+        echo "INSTANCE_ID=${INSTANCE_ID}"
+        echo "DTYPE=${DTYPE}"
+        echo "AWSREGION=${AWSREGION}"
+        echo "POLICY=${POLICY}"
+    } > "$HALT_FILE"
+else
+    INSTANCE_ID=$(grep "^INSTANCE_ID=" "$HALT_FILE" | cut -d= -f2)
+    DTYPE=$(grep "^DTYPE=" "$HALT_FILE" | cut -d= -f2)
+    AWSREGION=$(grep "^AWSREGION=" "$HALT_FILE" | cut -d= -f2)
+    POLICY=$(grep "^POLICY=" "$HALT_FILE" | cut -d= -f2)
+fi
+
+# If any value is empty, the cached file is bad — drop it and refetch
+if [ -z "$INSTANCE_ID" ] || [ -z "$DTYPE" ] || [ -z "$AWSREGION" ] || [ -z "$POLICY" ]; then
+    rm -f "$HALT_FILE"
+    fetch_metadata
+    {
+        echo "INSTANCE_ID=${INSTANCE_ID}"
+        echo "DTYPE=${DTYPE}"
+        echo "AWSREGION=${AWSREGION}"
+        echo "POLICY=${POLICY}"
+    } > "$HALT_FILE"
 fi
 
 if [[ "${INSTANCE_ID}" == "" ]] || [[ "$(echo ${INSTANCE_ID} | grep -E 'i-[a-f0-9]{8,17}')" == "" ]]; then
         echo "[ $(date) ] Need INSTANCE_ID, like: i-02cb1c2e2dececfcd, exiting"
         exit 1
 fi
-if [[ "${DTYPE}" == "" ]] || [[ "${DTYPE}" == "0" ]]; then
-        SEP=6
+if [[ -z "$DTYPE" || "$DTYPE" == "0" ]]; then
+    SEP=6
     FILE="CPUMON_LOGS_"
-    if [ "${POLICY}" != "SEVERE" ]; then
-       STEP=500
-    else
-       STEP=60
-    fi
+    DEFAULT_STEP=500
 else
-        SEP=12
-        FILE="GPU_TEMP_"
-        if [ "${DTYPE}" -lt "4" ]; then
-           if [ "${POLICY}" == "SEVERE" ]; then
-              STEP=60
-           else
-                STEP=500 #single GPU gives out single line in log, 500 lines = 2 hours
-           fi
-        else
-           if [ "${POLICY}" == "SEVERE" ]; then
-              STEP=60
-           else
-                STEP=2000 #4 gpus give 4 lines in log
-           fi
-        fi
+    SEP=12
+    FILE="GPU_TEMP_"
+    if [ "$DTYPE" -lt 4 ]; then
+        DEFAULT_STEP=500    # single GPU = 1 line/log, 500 lines ≈ 2h
+    else
+        DEFAULT_STEP=2000   # 4 GPUs = 4 lines/log
+    fi
 fi
+
+# Aggressive-idle policies: 15 minutes regardless of GPU/CPU
+case "$POLICY" in
+    SPOT|SEVERE)
+        STEP=90
+        ;;
+    *)
+        STEP=$DEFAULT_STEP
+        ;;
+esac
+echo "[ $(date) ] The instance:${INSTANCE_ID} Tag is:${POLICY} and the STEP therefore is:${STEP}"
 echo "[ $(date) ] Is AWS cli installed?"
 check=$(aws s3 ls 2>&1 | grep "snap")
 if [ "${check}" != "" ]; then
@@ -176,6 +199,10 @@ else
    wall "[ $(date) ] ${wall_message}"
    sleep 180
    wall "[ $(date) ] Well, 3 minutes have passed, shutdown is now...Bye Bye"
-   res=$(sudo aws ec2 stop-instances --instance-ids "${INSTANCE_ID}" --region $AWSREGION 2>&1)
+   if [ "${POLICY}" == "SPOT" ]; then
+      res=$(sudo aws ec2 terminate-instances --instance-ids "${INSTANCE_ID}" --region $AWSREGION 2>&1) #in SPOTs we terminate instead of shutdown
+   else
+      res=$(sudo aws ec2 stop-instances --instance-ids "${INSTANCE_ID}" --region $AWSREGION 2>&1)
+   fi
    echo "[ $(date) ] debug: got result for aws stop-instances: ${res}"
 fi
