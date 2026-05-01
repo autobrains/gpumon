@@ -256,6 +256,25 @@ def is_gpumon_dockerized(ssm, instance_id: str) -> bool:
     return inv.get("StandardOutputContent", "").strip() == "active"
 
 
+def _has_docker_deployment(ssm, instance_id: str) -> bool:
+    """Return True if a Docker gpumon deployment was installed on this instance.
+
+    Checks for the sentinel file written at the end of autoinstall.sh.  The
+    container may be stopped or broken — this probes deployment existence, not
+    health.  A legacy instance (never Dockerized) will not have the sentinel.
+    """
+    inv = run_ssm_command(
+        ssm,
+        instance_id,
+        [f"test -f {SENTINEL} && echo yes || echo no"],
+        poll_timeout=SSM_CHECK_TIMEOUT,
+        execution_timeout=30,
+    )
+    if inv is None:
+        return False
+    return inv.get("StandardOutputContent", "").strip() == "yes"
+
+
 # ---------------------------------------------------------------------------
 # IAM role management
 # ---------------------------------------------------------------------------
@@ -351,23 +370,19 @@ def handle_fix(ec2, ssm, instance_id: str) -> None:
     """Progressive fix for FAILED Docker instances.
 
     Step 1 (fast): pull latest code, rebuild and restart the container.
-    Step 2 (full): reset sentinel and re-run autoinstall.sh end-to-end.
+    Step 2 (full): re-clone the repo and run autoinstall.sh end-to-end.
     If still broken: tag NOT_FIXED for manual attention.
 
     Legacy (non-Docker) instances that go FAILED are not auto-fixed here —
     they are tagged NOT_FIXED with a message to set GPUMON=MIGRATE manually.
     """
-    # Refuse to run Docker fix commands on legacy instances to avoid
-    # inadvertently migrating them without operator intent.
-    inv = run_ssm_command(
-        ssm, instance_id,
-        ["docker info >/dev/null 2>&1 && echo docker-present || echo no-docker"],
-        poll_timeout=SSM_CHECK_TIMEOUT,
-        execution_timeout=30,
-    )
-    if inv is None or inv.get("StandardOutputContent", "").strip() != "docker-present":
-        print(f"[{instance_id}] Docker not found — this is a legacy instance; "
-              "set GPUMON=MIGRATE to upgrade it to Docker")
+    # Guard: require an existing Docker gpumon deployment (sentinel present).
+    # docker info alone is insufficient — a legacy instance may have Docker
+    # installed without gpumon being containerized.  The sentinel is written at
+    # the end of autoinstall.sh and survives a stopped/broken container.
+    if not _has_docker_deployment(ssm, instance_id):
+        print(f"[{instance_id}] no Docker gpumon deployment found — "
+              "set GPUMON=MIGRATE to upgrade this legacy instance")
         update_tag(ec2, instance_id, "NOT_FIXED")
         return
 
@@ -382,7 +397,10 @@ def handle_fix(ec2, ssm, instance_id: str) -> None:
         return
 
     time.sleep(5)
-    if is_gpumon_running(ssm, instance_id):
+    # Only declare step 1 success if the SSM command itself exited 0 AND
+    # the Docker container is now running.  is_gpumon_running() is intentionally
+    # NOT used here: a surviving legacy process must not mask a failed Docker fix.
+    if inv["Status"] == "Success" and is_gpumon_dockerized(ssm, instance_id):
         print(f"[{instance_id}] fixed by step 1")
         update_tag(ec2, instance_id, "ACTIVE")
         return
@@ -393,12 +411,12 @@ def handle_fix(ec2, ssm, instance_id: str) -> None:
         poll_timeout=SSM_INSTALL_TIMEOUT,
         execution_timeout=SSM_INSTALL_TIMEOUT,
     )
-    if inv is None:
+    if inv is None or inv["Status"] != "Success":
         update_tag(ec2, instance_id, "NOT_FIXED")
         return
 
     time.sleep(5)
-    if is_gpumon_running(ssm, instance_id):
+    if is_gpumon_dockerized(ssm, instance_id):
         print(f"[{instance_id}] fixed by step 2")
         update_tag(ec2, instance_id, "ACTIVE")
     else:
