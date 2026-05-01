@@ -220,46 +220,44 @@ def cleanup_old_logs(prefix: str, max_age_hours: int = 48) -> None:
 
 
 # ── Alert rate limiting ───────────────────────────────────────────────────────
-# State is persisted to /tmp so it survives container restarts (the /tmp:/tmp
-# bind-mount keeps the file on the host between container rebuilds).
+# State persisted to /tmp so it survives container restarts via /tmp:/tmp mount.
+# The lock file serialises concurrent access between gpumon and cpumon so the
+# check and record happen atomically — preventing duplicate DMs.
 
 _ALERT_STATE_FILE = "/tmp/gpumon_alert_state.json"
+_ALERT_LOCK_FILE  = "/tmp/gpumon_alert_state.lock"
 
 
-def _load_alert_state() -> dict:
+def try_record_alert(key: str, cooldown_hours: float) -> bool:
+    """Atomically check cooldown and record the alert if it should be sent.
+
+    Returns True if the alert should be sent (cooldown elapsed or first time).
+    Holds an exclusive lock for the entire read-check-write sequence so
+    concurrent gpumon and cpumon processes cannot both pass the cooldown check.
+    """
     try:
-        with open(_ALERT_STATE_FILE) as fh:
-            return json.load(fh)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
-
-
-def _save_alert_state(state: dict) -> None:
-    # Atomic write via temp-file + os.replace() so concurrent processes
-    # (gpumon + cpumon) never see a partial write.
-    tmp = _ALERT_STATE_FILE + ".tmp"
-    try:
-        with open(tmp, "w") as fh:
-            fcntl.flock(fh, fcntl.LOCK_EX)
-            json.dump(state, fh)
-        os.replace(tmp, _ALERT_STATE_FILE)
+        with open(_ALERT_LOCK_FILE, "w") as lock_fh:
+            fcntl.flock(lock_fh, fcntl.LOCK_EX)
+            # Read current state under lock
+            try:
+                with open(_ALERT_STATE_FILE) as fh:
+                    state = json.load(fh)
+            except (FileNotFoundError, json.JSONDecodeError):
+                state = {}
+            # Check cooldown
+            last_sent = state.get(key)
+            if last_sent is not None and time.time() - float(last_sent) <= cooldown_hours * 3600:
+                return False
+            # Record and write atomically
+            state[key] = time.time()
+            tmp = _ALERT_STATE_FILE + ".tmp"
+            with open(tmp, "w") as fh:
+                json.dump(state, fh)
+            os.replace(tmp, _ALERT_STATE_FILE)
+            return True
     except OSError as exc:
-        print(f"alert state save error: {exc}")
-
-
-def should_send_alert(key: str, cooldown_hours: float) -> bool:
-    """Return True if enough time has passed since the last alert of this type."""
-    last_sent = _load_alert_state().get(key)
-    if last_sent is None:
-        return True
-    return time.time() - float(last_sent) > cooldown_hours * 3600
-
-
-def record_alert_sent(key: str) -> None:
-    """Record that an alert of the given type was just sent."""
-    state = _load_alert_state()
-    state[key] = time.time()
-    _save_alert_state(state)
+        print(f"try_record_alert error: {exc}")
+        return False
 
 
 # ── Slack DM client factory ───────────────────────────────────────────────────

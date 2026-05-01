@@ -42,7 +42,7 @@ This writes a timestamp file that suppresses `halt_it.sh` for 2 hours. The Alarm
 
 ### Suspend idle-shutdown temporarily
 
-Set `GPUMON_POLICY = SUSPEND` on the instance. The restart backoff becomes 24 hours, effectively preventing automatic shutdown for a full day of inactivity.
+Set `GPUMON_POLICY = SUSPEND` on the instance. The restart backoff becomes 10 days, effectively preventing automatic shutdown for an extended period of inactivity.
 
 ### Disable employee DMs for an instance
 

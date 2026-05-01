@@ -97,7 +97,7 @@ Alerts reach the right person automatically. The `Employee` EC2 tag (email or di
 | `RELAXED` | 2 h | 5 % | 10 % | 10 000 pkt |
 | `SEVERE` | 0 | 20 % | 2 % | 15 000 pkt |
 | `SPOT` | 0 | 20 % | 10 % | 30 000 pkt |
-| `SUSPEND` | 24 h | 10 % | 10 % | 15 000 pkt |
+| `SUSPEND` | 10 days | 10 % | 10 % | 15 000 pkt |
 
 ---
 

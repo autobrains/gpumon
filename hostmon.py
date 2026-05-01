@@ -20,8 +20,7 @@ from mon_utils import (
     cleanup_old_logs,
     fetch_instance_metadata,
     get_instance_tags,
-    record_alert_sent,
-    should_send_alert,
+    try_record_alert,
 )
 
 NAMESPACE = "Host-metrics"
@@ -190,22 +189,20 @@ def main() -> None:
 
             # ── Employee DM alerts (disk & memory only) ──────────────────────
             if dm_client:
-                if disk_free_pct < disk_alert_free_pct and should_send_alert("disk_alert", alert_cooldown_hours):
+                if disk_free_pct < disk_alert_free_pct and try_record_alert("disk_alert", alert_cooldown_hours):
                     dm_client.send_dm(
                         emp_name,
                         f":warning: Disk space low on *{instance_name}*: "
                         f"only {disk_free_pct:.1f}% free ({disk_free_gb} GB remaining).",
                     )
-                    record_alert_sent("disk_alert")
 
-                if mem_used_pct > mem_alert_used_pct and should_send_alert("memory_alert", alert_cooldown_hours):
+                if mem_used_pct > mem_alert_used_pct and try_record_alert("memory_alert", alert_cooldown_hours):
                     dm_client.send_dm(
                         emp_name,
                         f":warning: Memory pressure on *{instance_name}*: "
                         f"{mem_used_pct:.1f}% in use. "
                         f"Top process: {top_mem_proc} ({top_mem_pct:.1f}%).",
                     )
-                    record_alert_sent("memory_alert")
 
         except Exception as exc:
             print(f"hostmon iteration error: {exc}")

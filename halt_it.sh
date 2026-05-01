@@ -35,9 +35,6 @@ fetch_metadata() {
         http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null)
     INSTANCE_ID=$(curl -s --max-time 5 -H "X-aws-ec2-metadata-token: $TOKEN" \
         http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null)
-    POLICY=$(aws ec2 describe-tags \
-        --filters "Name=resource-id,Values=$INSTANCE_ID" "Name=key,Values=GPUMON_POLICY" \
-        --query "Tags[0].Value" --output text --region "$AWSREGION")
 
     if nvidia-smi --list-gpus >/dev/null 2>&1; then
         DTYPE=$(nvidia-smi --list-gpus | wc -l)
@@ -52,25 +49,31 @@ if [ ! -s "$HALT_FILE" ]; then
         echo "INSTANCE_ID=${INSTANCE_ID}"
         echo "DTYPE=${DTYPE}"
         echo "AWSREGION=${AWSREGION}"
-        echo "POLICY=${POLICY}"
     } > "$HALT_FILE"
 else
     INSTANCE_ID=$(grep "^INSTANCE_ID=" "$HALT_FILE" | cut -d= -f2)
     DTYPE=$(grep "^DTYPE=" "$HALT_FILE" | cut -d= -f2)
     AWSREGION=$(grep "^AWSREGION=" "$HALT_FILE" | cut -d= -f2)
-    POLICY=$(grep "^POLICY=" "$HALT_FILE" | cut -d= -f2)
 fi
 
-# If any value is empty the cached file is bad — drop it and refetch
-if [ -z "$INSTANCE_ID" ] || [ -z "$DTYPE" ] || [ -z "$AWSREGION" ] || [ -z "$POLICY" ]; then
+# If any cached value is empty the file is bad — drop it and refetch
+if [ -z "$INSTANCE_ID" ] || [ -z "$DTYPE" ] || [ -z "$AWSREGION" ]; then
     rm -f "$HALT_FILE"
     fetch_metadata
     {
         echo "INSTANCE_ID=${INSTANCE_ID}"
         echo "DTYPE=${DTYPE}"
         echo "AWSREGION=${AWSREGION}"
-        echo "POLICY=${POLICY}"
     } > "$HALT_FILE"
+fi
+
+# POLICY is always fetched fresh so tag changes take effect on the next cron run
+POLICY=$(aws ec2 describe-tags \
+    --filters "Name=resource-id,Values=${INSTANCE_ID}" "Name=key,Values=GPUMON_POLICY" \
+    --query "Tags[0].Value" --output text --region "${AWSREGION}" 2>/dev/null)
+# Treat missing/None tag as STANDARD
+if [ -z "${POLICY}" ] || [ "${POLICY}" = "None" ]; then
+    POLICY="STANDARD"
 fi
 
 if [[ "${INSTANCE_ID}" == "" ]] || [[ "$(echo "${INSTANCE_ID}" | grep -E 'i-[a-f0-9]{8,17}')" == "" ]]; then
@@ -116,16 +119,32 @@ fi
 SECRET_ID="${GPUMON_SECRET_ID:-AB/InstanceRole}"
 SECRET_REGION="${GPUMON_SECRET_REGION:-eu-west-1}"
 echo "[ $(date) ] Getting creds from SM (secret: ${SECRET_ID} region: ${SECRET_REGION})..."
-creds_tmp=$(aws secretsmanager get-secret-value \
+
+# Ensure jq is available for robust JSON parsing
+if ! command -v jq &>/dev/null; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y jq -q 2>/dev/null || true
+fi
+
+secret_json=$(aws secretsmanager get-secret-value \
     --secret-id "${SECRET_ID}" \
     --region "${SECRET_REGION}" \
-    2>/dev/null \
-    | grep SecretString | rev | cut -c2- | rev | cut -d ":" -f2- | tr -d " " | tr -d '"')
-if [ "${creds_tmp}" == "" ]; then
+    --query "SecretString" \
+    --output text 2>/dev/null)
+
+if [ -z "${secret_json}" ] || [ "${secret_json}" = "None" ]; then
     echo "[ $(date) ] Warning: could not get creds from SM, using instance role: $(aws sts get-caller-identity 2>/dev/null)"
+elif command -v jq &>/dev/null; then
+    export AWS_ACCESS_KEY_ID=$(echo "${secret_json}" | jq -r '.AccessKeyId // empty')
+    export AWS_SECRET_ACCESS_KEY=$(echo "${secret_json}" | jq -r '.SecretAccessKey // empty')
+    export AWS_SESSION_TOKEN=$(echo "${secret_json}" | jq -r '.SessionToken // empty')
+    if [ -z "${AWS_ACCESS_KEY_ID}" ]; then
+        echo "[ $(date) ] Warning: SM secret parsed but AccessKeyId not found — using instance role"
+        unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+    else
+        echo "[ $(date) ] SM credentials loaded"
+    fi
 else
-    export AWS_ACCESS_KEY_ID=$(echo "${creds_tmp}" | cut -d ":" -f1)
-    export AWS_SECRET_ACCESS_KEY=$(echo "${creds_tmp}" | cut -d ":" -f2-)
+    echo "[ $(date) ] jq unavailable — using instance role"
 fi
 
 NOGO="TRUE"

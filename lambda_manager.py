@@ -1,4 +1,5 @@
 import boto3
+import re
 import time
 from botocore.exceptions import ClientError
 
@@ -6,11 +7,21 @@ from botocore.exceptions import ClientError
 # Constants
 # ---------------------------------------------------------------------------
 REGIONS = ["eu-west-1", "eu-central-1", "us-east-1"]
-IAM_ROLE_NAME   = "EC2IAMRole"
-TAG_KEY         = "GPUMON"
-BRANCH_TAG_KEY  = "GPUMON_BRANCH"   # optional per-instance override
-DEFAULT_BRANCH  = "main"            # legacy instances track main
-DOCKER_BRANCH   = "feature/dockerize"  # update to "main" once merged
+IAM_ROLE_NAME  = "EC2IAMRole"
+TAG_KEY        = "GPUMON"
+BRANCH_TAG_KEY = "GPUMON_BRANCH"       # optional per-instance branch override
+
+# All new installs and migrations use DOCKER_BRANCH.
+# Update this constant to "main" once feature/dockerize is merged.
+DOCKER_BRANCH  = "feature/dockerize"
+
+_VALID_BRANCH_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9/_.-]{0,99}$')
+
+def _validate_branch(branch: str) -> str:
+    """Raise ValueError if branch name contains shell-unsafe characters."""
+    if not _VALID_BRANCH_RE.match(branch):
+        raise ValueError(f"Unsafe branch name rejected: {branch!r}")
+    return branch
 
 SSM_COMMAND_POLL_INTERVAL = 5    # seconds between status polls
 SSM_CHECK_TIMEOUT   = 30         # quick is-running checks
@@ -28,6 +39,7 @@ SENTINEL    = "/var/log/gpumon.finished"
 
 def install_commands(branch: str) -> list[str]:
     """Clone the given branch and run autoinstall.sh."""
+    branch = _validate_branch(branch)
     return [
         "sudo apt-get update -q",
         "sudo DEBIAN_FRONTEND=noninteractive apt-get install -y git",
@@ -63,6 +75,7 @@ DELETE_COMMANDS = [
 
 def migrate_commands(branch: str) -> list[str]:
     """Stop all legacy gpumon artifacts and install the Docker deployment from branch."""
+    branch = _validate_branch(branch)
     return [
         # ── Stop and remove legacy systemd units ──
         "for svc in gpumon cpumon gpumon-monitor; do "
@@ -191,10 +204,12 @@ def is_gpumon_running(ssm, instance_id: str) -> bool:
         [
             # New: Docker container named gpumon is running
             "( docker ps --filter 'name=gpumon' --filter 'status=running' --quiet 2>/dev/null | grep -q . && echo active ) || "
-            # Legacy: gpumon.py process running directly
+            # Legacy: gpumon.py or cpumon.py process running directly
             "( pgrep -f 'python.*gpumon\\.py' >/dev/null 2>&1 && echo active ) || "
-            # Legacy: systemd service active
+            "( pgrep -f 'python.*cpumon\\.py' >/dev/null 2>&1 && echo active ) || "
+            # Legacy: systemd service active (gpu or cpu variant)
             "( systemctl is-active --quiet gpumon 2>/dev/null && echo active ) || "
+            "( systemctl is-active --quiet cpumon 2>/dev/null && echo active ) || "
             "echo inactive"
         ],
         poll_timeout=SSM_CHECK_TIMEOUT,
@@ -376,11 +391,13 @@ def handle_delete(ec2, ssm, instance_id: str) -> None:
         poll_timeout=SSM_FIX_TIMEOUT,
         execution_timeout=SSM_FIX_TIMEOUT,
     )
-    if inv is not None:
+    if inv is not None and inv.get("Status") == "Success":
         update_tag(ec2, instance_id, "")
         print(f"[{instance_id}] gpumon removed")
     else:
-        print(f"[{instance_id}] delete command failed")
+        status = inv.get("Status") if inv else "no response"
+        print(f"[{instance_id}] delete command failed (status: {status})")
+        update_tag(ec2, instance_id, "FAILED")
 
 
 def handle_migrate(ec2, ssm, instance_id: str, branch: str) -> None:
@@ -456,7 +473,7 @@ def lambda_handler(event, context):
 
             try:
                 if tag_value.lower() == "install" or tag_value == "PENDING_SSM":
-                    branch = branch_override or DEFAULT_BRANCH
+                    branch = branch_override or DOCKER_BRANCH
                     if state == "running":
                         handle_install(ec2, ssm, instance_id, branch)
                     else:

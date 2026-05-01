@@ -16,17 +16,15 @@ from mon_utils import (
     calculate_average_core_utilization,
     cleanup_old_logs,
     create_tag,
-    ensure_halt_it_crontab,
     fetch_instance_metadata,
     get_instance_tags,
     get_network_stats,
     get_per_core_cpu_utilization,
     get_policy_config,
-    record_alert_sent,
     resolve_webhooks,
     seconds_elapsed,
     send_slack,
-    should_send_alert,
+    try_record_alert,
 )
 
 NAMESPACE = "CPU-metrics"
@@ -91,9 +89,6 @@ def _log_results(
 
 def main() -> None:
     cleanup_old_logs(TMP_FILE_PREFIX, max_age_hours=48)
-    ensure_halt_it_crontab(
-        "*/10 * * * * bash /root/gpumon/halt_it.sh | tee -a /tmp/halt_it_log.txt"
-    )
 
     meta = fetch_instance_metadata()
     region        = meta["region"]
@@ -175,13 +170,12 @@ def main() -> None:
                                f"CPU and NETWORK seems idle, TURNED ALARM PILOT LIGHT to: ON, "
                                f"instance is expected to stop in: 3 hours")
                     # Personal DM to employee (rate-limited, not on SPOT)
-                    if dm_client and should_send_alert("shutdown_alert", shutdown_cooldown_hours):
+                    if dm_client and try_record_alert("shutdown_alert", shutdown_cooldown_hours):
                         dm_client.send_dm(
                             emp_name,
                             f":alarm_clock: Your instance *{instance_name}* appears idle "
                             f"and is scheduled to shut down in ~3 hours.",
                         )
-                        record_alert_sent("shutdown_alert")
             else:
                 if alarm_pilot_light == 1:
                     alarm_pilot_light = 0

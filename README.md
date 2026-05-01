@@ -128,7 +128,7 @@ Controls idle-detection sensitivity in `halt_it.sh` and the Python monitors.
 | `RELAXED` | 2 h | 5 % | 10 % | 10 000 pkts |
 | `SEVERE` | 0 | 20 % | 2 % | 15 000 pkts |
 | `SPOT` | 0 | 20 % | 10 % | 30 000 pkts |
-| `SUSPEND` | 24 h | 10 % | 10 % | 15 000 pkts |
+| `SUSPEND` | 10 days | 10 % | 10 % | 15 000 pkts |
 
 `SPOT` additionally suppresses all employee Slack DMs regardless of the `PAGE_EMPLOYEE` tag.
 

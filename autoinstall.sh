@@ -17,7 +17,7 @@ echo "[autoinstall] Starting gpumon installation from $REPO_DIR"
 
 # ── System packages ───────────────────────────────────────────────────────────
 apt-get update -q
-apt-get install -y git cron curl
+apt-get install -y git cron curl gnupg ca-certificates
 
 # ── Docker ────────────────────────────────────────────────────────────────────
 if ! command -v docker &>/dev/null; then
