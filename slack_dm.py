@@ -12,6 +12,9 @@ except ImportError:
     _SDK_AVAILABLE = False
 
 
+FALLBACK_EMPLOYEE = "Paul Seifer"
+
+
 class SlackDMClient:
     """Send Slack DMs to employees by name or email via a Bot OAuth token.
 
@@ -106,16 +109,25 @@ class SlackDMClient:
     # ── Public API ────────────────────────────────────────────────────────────
 
     def send_dm(self, employee: str, message: str) -> bool:
-        """Send a DM to employee. Returns True on success."""
+        """Send a DM to employee. Returns True on success.
+
+        If employee cannot be resolved to a Slack user, falls back to
+        FALLBACK_EMPLOYEE so the alert is not silently dropped.
+        """
         try:
+            recipient = employee
             user_id = self.find_user_id(employee)
+            if not user_id and employee != FALLBACK_EMPLOYEE:
+                print(f"slack_dm: '{employee}' unresolvable — falling back to '{FALLBACK_EMPLOYEE}'")
+                recipient = FALLBACK_EMPLOYEE
+                user_id = self.find_user_id(FALLBACK_EMPLOYEE)
             if not user_id:
                 return False
             channel_id = self._open_dm_channel(user_id)
             if not channel_id:
                 return False
             self._client.chat_postMessage(channel=channel_id, text=message)
-            print(f"slack_dm: DM sent to '{employee}'")
+            print(f"slack_dm: DM sent to '{recipient}'")
             return True
         except SlackApiError as exc:
             print(f"slack_dm: send_dm('{employee}') failed: {exc.response['error']}")
