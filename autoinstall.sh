@@ -7,6 +7,7 @@ REPO_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 SENTINEL="/var/log/gpumon.finished"
 HALT_HOST="/usr/local/sbin/halt_it.sh"
 UPDATE_SCRIPT="/usr/local/sbin/gpumon-update.sh"
+BOOT_SCRIPT="/usr/local/sbin/gpumon-boot.sh"
 
 if [ -f "$SENTINEL" ]; then
     echo "[autoinstall] Already installed. Remove $SENTINEL to reinstall."
@@ -145,6 +146,47 @@ fi
 echo "[\$(date)] gpumon-update: done"
 UPDATESCRIPT
 chmod +x "${UPDATE_SCRIPT}"
+
+# ── Boot reconciliation service ───────────────────────────────────────────────
+# Runs once after Docker starts on every boot.  Detects GPU presence and calls
+# docker compose up -d with the correct config so the container is always right
+# regardless of instance type changes (GPU ↔ CPU).  No image rebuild — fast.
+cat > "${BOOT_SCRIPT}" << BOOTSCRIPT
+#!/bin/bash
+set -euo pipefail
+REPO_DIR="${REPO_DIR}"
+cd "\$REPO_DIR"
+if command -v nvidia-smi &>/dev/null \\
+        && nvidia-smi --list-gpus >/dev/null 2>&1 \\
+        && [ "\$(nvidia-smi --list-gpus | wc -l)" -gt 0 ]; then
+    echo "[\$(date)] gpumon-boot: GPU detected — ensuring GPU compose"
+    docker compose up -d
+else
+    echo "[\$(date)] gpumon-boot: no GPU — ensuring CPU compose"
+    docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d
+fi
+BOOTSCRIPT
+chmod +x "${BOOT_SCRIPT}"
+
+cat > /etc/systemd/system/gpumon-boot.service << 'EOF'
+[Unit]
+Description=gpumon boot-time container reconciliation
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/gpumon-boot.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable gpumon-boot.service
+echo "[autoinstall] Boot reconciliation service enabled"
 
 # ── Systemd timer for hourly auto-updates ─────────────────────────────────────
 cat > /etc/systemd/system/gpumon-update.service << 'EOF'
