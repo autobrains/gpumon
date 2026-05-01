@@ -168,8 +168,10 @@ def main() -> None:
 
         # ── Network ──────────────────────────────────────────────────────────
         network = get_network_stats(cw, instance_id, network)
-        if network_tripped == 0 and network <= network_threshold:
+        if network <= network_threshold:
             network_tripped = 1
+        else:
+            network_tripped = 0
 
         # ── Alarm pilot light ────────────────────────────────────────────────
         if seconds >= restart_backoff:

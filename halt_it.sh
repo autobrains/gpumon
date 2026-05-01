@@ -26,45 +26,19 @@ else
     fi
 fi
 
-HALT_FILE=/tmp/halt_it.info
+# Always fetch fresh — IMDS calls are fast (<5 ms on EC2) and caching caused
+# stale-DTYPE bugs after instance type changes and stale INSTANCE_ID after AMI cloning.
+TOKEN=$(curl -s --max-time 5 -X PUT "http://169.254.169.254/latest/api/token" \
+    -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null)
+AWSREGION=$(curl -s --max-time 5 -H "X-aws-ec2-metadata-token: $TOKEN" \
+    http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null)
+INSTANCE_ID=$(curl -s --max-time 5 -H "X-aws-ec2-metadata-token: $TOKEN" \
+    http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null)
 
-fetch_metadata() {
-    TOKEN=$(curl -s --max-time 5 -X PUT "http://169.254.169.254/latest/api/token" \
-        -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null)
-    AWSREGION=$(curl -s --max-time 5 -H "X-aws-ec2-metadata-token: $TOKEN" \
-        http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null)
-    INSTANCE_ID=$(curl -s --max-time 5 -H "X-aws-ec2-metadata-token: $TOKEN" \
-        http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null)
-
-    if nvidia-smi --list-gpus >/dev/null 2>&1; then
-        DTYPE=$(nvidia-smi --list-gpus | wc -l)
-    else
-        DTYPE="0"
-    fi
-}
-
-if [ ! -s "$HALT_FILE" ]; then
-    fetch_metadata
-    {
-        echo "INSTANCE_ID=${INSTANCE_ID}"
-        echo "DTYPE=${DTYPE}"
-        echo "AWSREGION=${AWSREGION}"
-    } > "$HALT_FILE"
+if nvidia-smi --list-gpus >/dev/null 2>&1; then
+    DTYPE=$(nvidia-smi --list-gpus | wc -l)
 else
-    INSTANCE_ID=$(grep "^INSTANCE_ID=" "$HALT_FILE" | cut -d= -f2)
-    DTYPE=$(grep "^DTYPE=" "$HALT_FILE" | cut -d= -f2)
-    AWSREGION=$(grep "^AWSREGION=" "$HALT_FILE" | cut -d= -f2)
-fi
-
-# If any cached value is empty the file is bad — drop it and refetch
-if [ -z "$INSTANCE_ID" ] || [ -z "$DTYPE" ] || [ -z "$AWSREGION" ]; then
-    rm -f "$HALT_FILE"
-    fetch_metadata
-    {
-        echo "INSTANCE_ID=${INSTANCE_ID}"
-        echo "DTYPE=${DTYPE}"
-        echo "AWSREGION=${AWSREGION}"
-    } > "$HALT_FILE"
+    DTYPE="0"
 fi
 
 # POLICY is always fetched fresh so tag changes take effect on the next cron run
@@ -76,8 +50,8 @@ if [ -z "${POLICY}" ] || [ "${POLICY}" = "None" ]; then
     POLICY="STANDARD"
 fi
 
-if [[ "${INSTANCE_ID}" == "" ]] || [[ "$(echo "${INSTANCE_ID}" | grep -E 'i-[a-f0-9]{8,17}')" == "" ]]; then
-    echo "[ $(date) ] Need INSTANCE_ID like i-02cb1c2e2dececfcd, exiting"
+if [[ -z "$AWSREGION" ]] || [[ "${INSTANCE_ID}" == "" ]] || [[ "$(echo "${INSTANCE_ID}" | grep -E 'i-[a-f0-9]{8,17}')" == "" ]]; then
+    echo "[ $(date) ] IMDS unreachable or returned bad values (INSTANCE_ID='${INSTANCE_ID}' AWSREGION='${AWSREGION}'), exiting"
     exit 1
 fi
 

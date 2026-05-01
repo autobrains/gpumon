@@ -67,9 +67,13 @@ FIX_STEP1_COMMANDS = [
     f"fi",
 ]
 
-# Fix step 2 (full reinstall): reset sentinel so autoinstall.sh re-runs everything.
+# Fix step 2 (full reinstall): re-clone the repo (in case it is corrupted) then
+# run autoinstall.sh end-to-end.  Removing SENTINEL alone is not enough if the
+# repo itself is the broken artifact.
 FIX_STEP2_COMMANDS = [
     f"sudo rm -f {SENTINEL}",
+    f"sudo rm -rf {GPUMON_DIR}",
+    f"sudo git clone --branch {DOCKER_BRANCH} {GPUMON_REPO} {GPUMON_DIR}",
     f"sudo bash {GPUMON_DIR}/autoinstall.sh",
 ]
 
