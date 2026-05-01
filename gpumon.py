@@ -250,7 +250,9 @@ def main() -> None:
                 temp,     ok2  = _get_temp(handle)
                 util, gpu_util, mem_util, ok3 = _get_utilization(handle)
                 push_to_cw = push_to_cw and ok1 and ok2 and ok3
-                if util is not None:
+                if not ok3:
+                    gpu_query_failed = True
+                elif util is not None:
                     valid_gpu_count += 1
                     total_gpu_util += float(gpu_util)
                 gpu_results.append((util, gpu_util, mem_util, pow_draw, temp))
