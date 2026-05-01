@@ -159,7 +159,23 @@ cd "\$REPO_DIR"
 if command -v nvidia-smi &>/dev/null \\
         && nvidia-smi --list-gpus >/dev/null 2>&1 \\
         && [ "\$(nvidia-smi --list-gpus | wc -l)" -gt 0 ]; then
-    echo "[\$(date)] gpumon-boot: GPU detected — ensuring GPU compose"
+    echo "[\$(date)] gpumon-boot: GPU detected"
+    # Install NVIDIA Container Toolkit if missing (handles CPU→GPU instance type change).
+    if ! dpkg -l nvidia-container-toolkit >/dev/null 2>&1; then
+        echo "[\$(date)] gpumon-boot: NVIDIA Container Toolkit missing — installing..."
+        distribution=\$(. /etc/os-release && echo "\${ID}\${VERSION_ID}")
+        curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \\
+            | gpg --batch --no-tty --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+        curl -fsSL "https://nvidia.github.io/libnvidia-container/\${distribution}/libnvidia-container.list" \\
+            | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \\
+            | tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+        apt-get -o DPkg::Lock::Timeout=120 update -q
+        apt-get -o DPkg::Lock::Timeout=120 install -y nvidia-container-toolkit
+        nvidia-ctk runtime configure --runtime=docker
+        systemctl restart docker
+        timeout 30 bash -c 'until docker info >/dev/null 2>&1; do sleep 1; done'
+    fi
+    echo "[\$(date)] gpumon-boot: ensuring GPU compose"
     docker compose up -d
 else
     echo "[\$(date)] gpumon-boot: no GPU — ensuring CPU compose"
@@ -192,7 +208,7 @@ echo "[autoinstall] Boot reconciliation service enabled"
 cat > /etc/systemd/system/gpumon-update.service << 'EOF'
 [Unit]
 Description=gpumon auto-update
-After=network-online.target
+After=network-online.target gpumon-boot.service
 Wants=network-online.target
 
 [Service]

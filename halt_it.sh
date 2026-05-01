@@ -56,10 +56,8 @@ if [[ -z "$AWSREGION" ]] || [[ "${INSTANCE_ID}" == "" ]] || [[ "$(echo "${INSTAN
 fi
 
 if [[ -z "$DTYPE" || "$DTYPE" == "0" ]]; then
-    SEP=6
     FILE="CPUMON_LOGS_"
 else
-    SEP=12
     FILE="GPU_TEMP_"
 fi
 
@@ -171,24 +169,25 @@ else
         REASON="INSUFFICIENT_DATA:${line_count}_lines_in_${WINDOW_SECONDS}s_window_(need_${min_lines})"
     else
         # ── Analyse window lines ───────────────────────────────────────────────
-        check=$(echo "${window_lines}" | cut -d ":" -f"${SEP}" | sort | uniq -c | grep "CPU_Util")
-        if [ "${check}" == "" ]; then
+        # Match Alarm_Pilot_value by name rather than by colon-delimited field
+        # position — positional cut breaks when tag values (Team, Employee, etc.)
+        # contain colons, which shifts every subsequent field index.
+        valid_count=$(echo "${window_lines}" | grep -cE 'Alarm_Pilot_value:[01],' || true)
+        if [ "${valid_count}" -eq 0 ]; then
             NOGO="TRUE"
             REASON="LOG_EXISTS_BUT_NO_VALID_DATA"
         else
-            result=$(echo "${window_lines}" | cut -d ":" -f"${SEP}" | sort | uniq -c | grep "0,CPU_Util_Tripped")
-            if [ "${result}" == "" ]; then
-                positive=$(echo "${window_lines}" | cut -d ":" -f"${SEP}" | sort | uniq -c | grep "1,CPU_Util_Tripped")
-                if [ "${positive}" == "" ]; then
-                    NOGO="TRUE"
-                    REASON="ALARM_WASNT_ON_DURING_WINDOW,INCONCLUSIVE"
-                else
-                    NOGO="FALSE"
-                    REASON="PILOT_ON_FOR_FULL_${WINDOW_SECONDS}s_WINDOW:${positive}"
-                fi
+            pilot_off=$(echo "${window_lines}" | grep -cE 'Alarm_Pilot_value:0,' || true)
+            pilot_on=$(echo "${window_lines}"  | grep -cE 'Alarm_Pilot_value:1,' || true)
+            if [ "${pilot_off}" -gt 0 ]; then
+                NOGO="TRUE"
+                REASON="ACTIVITY_SPIKE_IN_WINDOW:${pilot_off}_lines_pilot_off"
+            elif [ "${pilot_on}" -gt 0 ]; then
+                NOGO="FALSE"
+                REASON="PILOT_ON_FOR_FULL_${WINDOW_SECONDS}s_WINDOW:${pilot_on}_lines"
             else
                 NOGO="TRUE"
-                REASON="ACTIVITY_SPIKE_IN_WINDOW:${result}"
+                REASON="ALARM_WASNT_ON_DURING_WINDOW,INCONCLUSIVE"
             fi
         fi
     fi

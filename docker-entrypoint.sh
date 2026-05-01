@@ -16,8 +16,10 @@ else
 fi
 main_pid=$!
 
-# Block until either child exits; then exit 1 so Docker restarts the container.
-# Requires bash >= 4.3 (Ubuntu 22.04 ships bash 5.x).
-wait -n "$hostmon_pid" "$main_pid"
+# Block until either child exits, then exit 1 so Docker restarts the container.
+# Portable replacement for 'wait -n' (bash >= 4.3): poll with kill -0 every second.
+while kill -0 "$hostmon_pid" 2>/dev/null && kill -0 "$main_pid" 2>/dev/null; do
+    sleep 1
+done
 echo "[entrypoint] a monitor process exited — restarting container"
 exit 1

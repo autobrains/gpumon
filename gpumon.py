@@ -236,7 +236,13 @@ def main() -> None:
             gpu_results: list[tuple] = []
 
             for i in range(device_count):
-                handle = nvmlDeviceGetHandleByIndex(i)
+                try:
+                    handle = nvmlDeviceGetHandleByIndex(i)
+                except NVMLError as err:
+                    print(f"GPU {i}: nvmlDeviceGetHandleByIndex failed: {err} — skipping")
+                    push_to_cw = False
+                    gpu_results.append((None, "0", "0", "0.00", "0"))
+                    continue
                 pow_draw, ok1  = _get_power_draw(handle)
                 temp,     ok2  = _get_temp(handle)
                 util, gpu_util, mem_util, ok3 = _get_utilization(handle)
