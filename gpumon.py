@@ -183,7 +183,7 @@ def main() -> None:
     shutdown_cooldown_hours = float(os.getenv("SHUTDOWN_ALERT_COOLDOWN_HOURS", "4"))
 
     # Slack DM client — None if secret not configured or unreachable
-    slack_secret_id     = os.getenv("GPUMON_SLACK_SECRET_ID", "AB/SlackBotToken")
+    slack_secret_id     = os.getenv("GPUMON_SLACK_SECRET_ID", "IT/SLACK_BOT_TOKEN")
     slack_secret_region = os.getenv("GPUMON_SLACK_SECRET_REGION", os.getenv("GPUMON_SECRET_REGION", "eu-west-1"))
     dm_client = build_slack_dm_client(slack_secret_id, slack_secret_region) if page_employee else None
 
