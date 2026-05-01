@@ -50,9 +50,17 @@ def install_commands(branch: str) -> list[str]:
     ]
 
 # Fix step 1 (fast path): pull latest code and rebuild the running container.
+# Use fetch + reset --hard @{upstream} rather than git pull --force: it explicitly
+# resets to the tracked remote branch and does not drift if the local HEAD somehow
+# moved (e.g. a legacy update timer switched the branch to main).
+# The docker compose command mirrors autoinstall.sh's GPU vs CPU selection.
 FIX_STEP1_COMMANDS = [
-    f"cd {GPUMON_DIR} && sudo git pull --force",
-    f"cd {GPUMON_DIR} && sudo docker compose up -d --build",
+    f"cd {GPUMON_DIR} && sudo git fetch origin && sudo git reset --hard @{{upstream}}",
+    f"if nvidia-smi --list-gpus >/dev/null 2>&1 && [ \"$(nvidia-smi --list-gpus | wc -l)\" -gt 0 ]; then "
+    f"  sudo docker compose -f {GPUMON_DIR}/docker-compose.yml up -d --build; "
+    f"else "
+    f"  sudo docker compose -f {GPUMON_DIR}/docker-compose.yml -f {GPUMON_DIR}/docker-compose.cpu.yml up -d --build; "
+    f"fi",
 ]
 
 # Fix step 2 (full reinstall): reset sentinel so autoinstall.sh re-runs everything.

@@ -95,7 +95,8 @@ set -euo pipefail
 REPO_DIR="${REPO_DIR}"
 
 BEFORE=\$(git -C "\$REPO_DIR" rev-parse HEAD)
-git -C "\$REPO_DIR" pull --force --quiet
+git -C "\$REPO_DIR" fetch origin --quiet
+git -C "\$REPO_DIR" reset --hard @{upstream} --quiet
 AFTER=\$(git -C "\$REPO_DIR" rev-parse HEAD)
 
 if [ "\$BEFORE" = "\$AFTER" ]; then
