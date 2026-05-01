@@ -76,6 +76,8 @@ FIX_STEP2_COMMANDS = [
 # Delete: stop stack, remove timer and crontab entry, wipe repo.
 DELETE_COMMANDS = [
     f"cd {GPUMON_DIR} && sudo docker compose down || true",
+    # Fallback: stop/remove any lingering containers by name label regardless of compose state
+    "sudo docker ps -a --filter 'label=com.docker.compose.project=gpumon' -q | xargs -r sudo docker rm -f || true",
     "sudo systemctl disable --now gpumon-update.timer 2>/dev/null || true",
     "sudo rm -f /etc/systemd/system/gpumon-update.service /etc/systemd/system/gpumon-update.timer",
     "sudo systemctl daemon-reload 2>/dev/null || true",
