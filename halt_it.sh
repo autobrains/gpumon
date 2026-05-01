@@ -181,12 +181,14 @@ else
 
     line_count=$(echo "${window_lines}" | grep -c .)
 
-    # Require at least 50% of the expected sample count (1 line/10 s per GPU process,
-    # or 1 line/10 s for CPU-only).  Multi-GPU instances write DTYPE lines per tick.
+    # Require 90% of expected samples so the full window is covered.
+    # At 10 s/sample, 90% of WINDOW_SECONDS = WINDOW_SECONDS * 9 / 100.
+    # Multi-GPU instances write DTYPE lines per tick so multiply accordingly.
+    # This prevents a 1-h-idle / 1-h-active pattern from passing the 2-h check.
     if [ "${DTYPE}" -gt 0 ]; then
-        min_lines=$(( WINDOW_SECONDS / 20 * DTYPE ))
+        min_lines=$(( WINDOW_SECONDS * 9 / 100 * DTYPE ))
     else
-        min_lines=$(( WINDOW_SECONDS / 20 ))
+        min_lines=$(( WINDOW_SECONDS * 9 / 100 ))
     fi
     echo "[ $(date) ] Lines in window: ${line_count}  min required: ${min_lines}"
 

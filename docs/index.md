@@ -66,8 +66,8 @@ gpumon.py / cpumon.py
               └── Slack: team channel alert + employee DM (4 h cooldown)
 
 halt_it.sh (host crontab, every 10 min)
-  └── parses /tmp/GPU_TEMP_* or CPUMON_LOGS_*
-        └── pilot light = 1 for last 2 h?
+  └── collects log lines timestamped within policy window
+        └── no activity spike AND ≥ 90% sample coverage?
               └── fetch creds from Secrets Manager
                     └── aws ec2 stop-instances (or terminate)
 ```

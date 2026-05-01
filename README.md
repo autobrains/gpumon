@@ -220,7 +220,14 @@ Dimensions: `InstanceId`, `ImageId`, `InstanceType`, `InstanceTag`, `EmployeeTag
 
 ## Idle-Shutdown — `halt_it.sh`
 
-`halt_it.sh` runs on the **host** crontab every 10 minutes. It parses the monitor log files in `/tmp` and counts how many consecutive entries have the alarm pilot light set to `1`. If that condition has held for 2 hours, it:
+`halt_it.sh` runs on the **host** crontab every 10 minutes. It parses the monitor log files in `/tmp` and evaluates all log lines timestamped within the policy window. **Shutdown requires both conditions:**
+
+1. **No activity spike** — every sample in the window shows `Alarm_Pilot_value:1` (GPU/CPU and network all below threshold for the entire window).
+2. **≥ 90% sample coverage** — at least 90% of the expected 10-second samples exist in the window, preventing a brief monitoring gap or a 1-hour-idle / 1-hour-active pattern from triggering a false shutdown.
+
+The policy window is 2 hours for STANDARD / RELAXED / SUSPEND and 15 minutes for SPOT / SEVERE.
+
+If both conditions are met, `halt_it.sh`:
 
 1. Writes a wall message to the terminal.
 2. Fetches stop/terminate credentials from Secrets Manager (`GPUMON_SECRET_ID`).
