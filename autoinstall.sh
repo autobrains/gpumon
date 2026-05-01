@@ -15,6 +15,13 @@ fi
 
 echo "[autoinstall] Starting gpumon installation from $REPO_DIR"
 
+# ── Stop automatic update services so they don't hold the apt lock ───────────
+systemctl stop unattended-upgrades apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
+while fuser /var/lib/apt/lists/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock >/dev/null 2>&1; do
+    echo "[autoinstall] waiting for apt lock..."
+    sleep 5
+done
+
 # ── System packages ───────────────────────────────────────────────────────────
 apt-get -o DPkg::Lock::Timeout=120 update -q
 apt-get -o DPkg::Lock::Timeout=120 install -y git cron curl gnupg ca-certificates

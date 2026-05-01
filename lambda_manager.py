@@ -41,6 +41,10 @@ def install_commands(branch: str) -> list[str]:
     """Clone the given branch and run autoinstall.sh."""
     branch = _validate_branch(branch)
     return [
+        # Stop automatic update services so they don't hold the apt lock for
+        # longer than our DPkg::Lock::Timeout can wait.
+        "sudo systemctl stop unattended-upgrades apt-daily.service apt-daily-upgrade.service 2>/dev/null || true",
+        "while sudo fuser /var/lib/apt/lists/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock >/dev/null 2>&1; do echo 'waiting for apt lock...'; sleep 5; done",
         "sudo apt-get -o DPkg::Lock::Timeout=120 update -q",
         "sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y git",
         f"sudo rm -f {SENTINEL}",
@@ -102,6 +106,9 @@ def migrate_commands(branch: str) -> list[str]:
         "crontab -l 2>/dev/null | grep -v halt_it.sh | grep -v gpumon | crontab - || true",
         # ── Drop sentinel so autoinstall.sh always runs end-to-end ──
         f"sudo rm -f {SENTINEL}",
+        # ── Stop automatic update services so they don't hold the apt lock ──
+        "sudo systemctl stop unattended-upgrades apt-daily.service apt-daily-upgrade.service 2>/dev/null || true",
+        "while sudo fuser /var/lib/apt/lists/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock >/dev/null 2>&1; do echo 'waiting for apt lock...'; sleep 5; done",
         # ── Fresh clone at the Docker branch ──
         f"sudo rm -rf {GPUMON_DIR}",
         "sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y git -q",
