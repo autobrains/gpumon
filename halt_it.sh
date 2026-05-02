@@ -43,17 +43,20 @@ case "$POLICY" in
     SPOT|SEVERE)
         WINDOW_SECONDS=$((15 * 60))
         KILL_HALT_BACKOFF=$((30 * 60))
+        MIN_UPTIME_SECS=0
         ;;
     STANDARD)
         WINDOW_SECONDS=$((60 * 60))
         KILL_HALT_BACKOFF=$((2 * 60 * 60))
+        MIN_UPTIME_SECS=$((2 * 60 * 60))
         ;;
     *)
         WINDOW_SECONDS=$((2 * 60 * 60))
         KILL_HALT_BACKOFF=$((2 * 60 * 60))
+        MIN_UPTIME_SECS=0
         ;;
 esac
-echo "[ $(date) ] Instance: ${INSTANCE_ID}  Policy: ${POLICY}  Window: ${WINDOW_SECONDS}s  KillHaltBackoff: ${KILL_HALT_BACKOFF}s"
+echo "[ $(date) ] Instance: ${INSTANCE_ID}  Policy: ${POLICY}  Window: ${WINDOW_SECONDS}s  KillHaltBackoff: ${KILL_HALT_BACKOFF}s  MinUptime: ${MIN_UPTIME_SECS}s"
 
 # ── kill-halt backoff check ───────────────────────────────────────────────────
 TIMESTAMP_FILE="/tmp/timestamp.txt"
@@ -71,6 +74,20 @@ else
     else
         remaining=$((KILL_HALT_BACKOFF - time_diff))
         echo "[ $(date) ] Kill-halt active (${POLICY}: ${KILL_HALT_BACKOFF}s). ${remaining}s remaining. Will not halt now."
+        exit 1
+    fi
+fi
+
+# ── Boot-time uptime guard ────────────────────────────────────────────────────
+# Guarantees a minimum on-time after boot regardless of idle state.
+# Separate from kill_halt (user-triggered); this fires automatically.
+# restart_backoff=0 in mon_utils.py lets the pilot track real idleness from
+# boot so that idle time logged during boot counts toward the halt window.
+if [ "${MIN_UPTIME_SECS}" -gt 0 ]; then
+    uptime_secs=$(awk '{print int($1)}' /proc/uptime)
+    if [ "${uptime_secs}" -lt "${MIN_UPTIME_SECS}" ]; then
+        remaining=$((MIN_UPTIME_SECS - uptime_secs))
+        echo "[ $(date) ] Boot guard active (${POLICY}: uptime=${uptime_secs}s < ${MIN_UPTIME_SECS}s). ${remaining}s remaining. Will not halt now."
         exit 1
     fi
 fi
