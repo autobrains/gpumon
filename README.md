@@ -140,7 +140,7 @@ Copy `.env.example` to `.env` in the repo directory before starting the containe
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GPUMON_SLACK_SECRET_ID` | `AB/SlackBotToken` | Secrets Manager secret for the Slack Bot token |
+| `GPUMON_SLACK_SECRET_ID` | `IT/SLACK_BOT_TOKEN` | Secrets Manager secret for the Slack Bot token |
 | `GPUMON_SLACK_SECRET_REGION` | `eu-west-1` | Region where the Slack secret lives |
 | `GPUMON_SECRET_ID` | `AB/InstanceRole` | Secrets Manager secret for stop/terminate credentials |
 | `GPUMON_SECRET_REGION` | `eu-west-1` | Region where the stop-credential secret lives |
@@ -310,7 +310,7 @@ The `/tmp:/tmp` bind-mount means alert state (`gpumon_alert_state.json`) and log
 | `docker-entrypoint.sh` | Detects GPU, launches gpumon.py or cpumon.py + hostmon.py |
 | `Dockerfile` | `nvidia/cuda:12.2.0-base-ubuntu22.04` base, Python 3, boto3, pynvml |
 | `docker-compose.yml` | GPU variant: `network_mode: host`, `pid: host`, `/tmp:/tmp`, all GPUs |
-| `docker-compose.cpu.yml` | CPU override: removes NVIDIA device reservation |
+| `docker-compose.cpu.yml` | CPU standalone compose: no GPU config, forces `runtime: runc` |
 | `lambda_manager.py` | AWS Lambda fleet manager (SSM, EC2 tags, IAM) |
 | `requirements.txt` | Pinned Python dependencies |
 | `.env.example` | Template for all configurable environment variables |
@@ -326,7 +326,7 @@ The `/tmp:/tmp` bind-mount means alert state (`gpumon_alert_state.json`) and log
 docker compose up -d
 
 # CPU-only instance
-docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d
+docker compose -f docker-compose.cpu.yml up -d
 
 # Rebuild after code change
 docker compose up -d --build
