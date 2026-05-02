@@ -8,8 +8,7 @@ services:
     volumes:
       - /tmp:/tmp
     env_file:
-      - path: .env
-        required: false
+      - .env
     deploy:
       resources:
         reservations:
