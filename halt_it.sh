@@ -97,9 +97,9 @@ secret_json=$(aws secretsmanager get-secret-value \
 if [ -z "${secret_json}" ] || [ "${secret_json}" = "None" ]; then
     echo "[ $(date) ] Warning: could not get creds from SM, using instance role: $(aws sts get-caller-identity 2>/dev/null)"
 elif command -v jq &>/dev/null; then
-    export AWS_ACCESS_KEY_ID=$(echo "${secret_json}" | jq -r '.AccessKeyId // empty')
-    export AWS_SECRET_ACCESS_KEY=$(echo "${secret_json}" | jq -r '.SecretAccessKey // empty')
-    export AWS_SESSION_TOKEN=$(echo "${secret_json}" | jq -r '.SessionToken // empty')
+    export AWS_ACCESS_KEY_ID=$(echo "${secret_json}" | jq -r '.AccessKeyId // empty' 2>/dev/null)
+    export AWS_SECRET_ACCESS_KEY=$(echo "${secret_json}" | jq -r '.SecretAccessKey // empty' 2>/dev/null)
+    export AWS_SESSION_TOKEN=$(echo "${secret_json}" | jq -r '.SessionToken // empty' 2>/dev/null)
     if [ -z "${AWS_ACCESS_KEY_ID}" ]; then
         echo "[ $(date) ] Warning: SM secret parsed but AccessKeyId not found — using instance role"
         unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
