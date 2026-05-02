@@ -1,5 +1,6 @@
 services:
   gpumon:
+    runtime: runc
     deploy:
       resources:
         reservations:
