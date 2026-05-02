@@ -3,6 +3,9 @@
 # Idempotent: re-running is safe.  Remove /var/log/gpumon.finished to reinstall.
 set -euo pipefail
 
+# Suppress needrestart prompts on Ubuntu 24.04+ (no-op on older distros).
+export NEEDRESTART_MODE=a
+
 REPO_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 SENTINEL="/var/log/gpumon.finished"
 HALT_HOST="/usr/local/sbin/halt_it.sh"
