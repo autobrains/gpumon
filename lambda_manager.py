@@ -257,16 +257,20 @@ def is_gpumon_dockerized(ssm, instance_id: str) -> bool:
 
 
 def _has_docker_deployment(ssm, instance_id: str) -> bool:
-    """Return True if a Docker gpumon deployment was installed on this instance.
+    """Return True if a Docker gpumon deployment exists on this instance.
 
-    Checks for the sentinel file written at the end of autoinstall.sh.  The
-    container may be stopped or broken — this probes deployment existence, not
-    health.  A legacy instance (never Dockerized) will not have the sentinel.
+    Accepts either the sentinel file (written at end of autoinstall.sh) OR the
+    presence of docker-compose.yml in GPUMON_DIR.  The boot service restarts the
+    container without recreating the sentinel, so either marker is sufficient.
+    A legacy instance (never Dockerized) will have neither.
     """
+    # Check sentinel OR compose file: gpumon-boot.service starts the container
+    # without recreating the sentinel, so a running post-boot instance may lack
+    # the sentinel while docker-compose.yml is present in GPUMON_DIR.
     inv = run_ssm_command(
         ssm,
         instance_id,
-        [f"test -f {SENTINEL} && echo yes || echo no"],
+        [f"{{ test -f {SENTINEL} || test -f {GPUMON_DIR}/docker-compose.yml; }} && echo yes || echo no"],
         poll_timeout=SSM_CHECK_TIMEOUT,
         execution_timeout=30,
     )
