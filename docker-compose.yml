@@ -2,6 +2,7 @@ services:
   gpumon:
     build: .
     restart: unless-stopped
+    runtime: nvidia
     network_mode: host
     pid: host
     volumes:
