@@ -1,31 +1,12 @@
 #!/bin/bash
-# Parse gpumon logs; if Alarm_Pilot was "1" for the last 2 hours, stop/terminate
+# Parse gpumon logs; if Alarm_Pilot was "1" for the idle window, stop/terminate
 # the instance.  Intended to run as a cron job every 10 minutes.
 # (c) Paul Seifer, Autobrains LTD
 #
 # Example cron entry:
 #   */10 * * * * bash /root/gpumon/halt_it.sh | tee -a /tmp/halt_it_log.txt
 
-TIMESTAMP_FILE="/tmp/timestamp.txt"
-if [ ! -f "${TIMESTAMP_FILE}" ]; then
-    echo "[ $(date) ] Stop file not found, will continue the script"
-else
-    current_time=$(date +%s)
-    _timestamp=$(cat "${TIMESTAMP_FILE}")
-    timestamp=$(date -d "${_timestamp}" +%s)
-    time_diff=$((current_time - timestamp))
-    two_hours=$((2 * 60 * 60))
-
-    if [ "$time_diff" -ge "$two_hours" ]; then
-        echo "[ $(date) ] More than 2 hours have passed since the timestamp."
-        rm -f "${TIMESTAMP_FILE}" 2>/dev/null
-    else
-        remaining=$((two_hours - time_diff))
-        echo "[ $(date) ] Less than 2 hours have passed. $remaining seconds remaining. Will not halt now."
-        exit 1
-    fi
-fi
-
+# ── IMDS + identity ───────────────────────────────────────────────────────────
 # Always fetch fresh — IMDS calls are fast (<5 ms on EC2) and caching caused
 # stale-DTYPE bugs after instance type changes and stale INSTANCE_ID after AMI cloning.
 TOKEN=$(curl -s --max-time 5 -X PUT "http://169.254.169.254/latest/api/token" \
@@ -34,6 +15,11 @@ AWSREGION=$(curl -s --max-time 5 -H "X-aws-ec2-metadata-token: $TOKEN" \
     http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null)
 INSTANCE_ID=$(curl -s --max-time 5 -H "X-aws-ec2-metadata-token: $TOKEN" \
     http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null)
+
+if [[ -z "$AWSREGION" ]] || [[ "${INSTANCE_ID}" == "" ]] || [[ "$(echo "${INSTANCE_ID}" | grep -E 'i-[a-f0-9]{8,17}')" == "" ]]; then
+    echo "[ $(date) ] IMDS unreachable or returned bad values (INSTANCE_ID='${INSTANCE_ID}' AWSREGION='${AWSREGION}'), exiting"
+    exit 1
+fi
 
 if nvidia-smi --list-gpus >/dev/null 2>&1; then
     DTYPE=$(nvidia-smi --list-gpus | wc -l)
@@ -50,9 +36,39 @@ if [ -z "${POLICY}" ] || [ "${POLICY}" = "None" ]; then
     POLICY="STANDARD"
 fi
 
-if [[ -z "$AWSREGION" ]] || [[ "${INSTANCE_ID}" == "" ]] || [[ "$(echo "${INSTANCE_ID}" | grep -E 'i-[a-f0-9]{8,17}')" == "" ]]; then
-    echo "[ $(date) ] IMDS unreachable or returned bad values (INSTANCE_ID='${INSTANCE_ID}' AWSREGION='${AWSREGION}'), exiting"
-    exit 1
+# ── Policy-derived durations ──────────────────────────────────────────────────
+# SPOT/SEVERE have a 15-min idle window; their kill-halt backoff is 2x that.
+# All other policies use a 2-hour idle window with a matching 2-hour backoff.
+case "$POLICY" in
+    SPOT|SEVERE)
+        WINDOW_SECONDS=$((15 * 60))
+        KILL_HALT_BACKOFF=$((30 * 60))
+        ;;
+    *)
+        WINDOW_SECONDS=$((2 * 60 * 60))
+        KILL_HALT_BACKOFF=$((2 * 60 * 60))
+        ;;
+esac
+echo "[ $(date) ] Instance: ${INSTANCE_ID}  Policy: ${POLICY}  Window: ${WINDOW_SECONDS}s  KillHaltBackoff: ${KILL_HALT_BACKOFF}s"
+
+# ── kill-halt backoff check ───────────────────────────────────────────────────
+TIMESTAMP_FILE="/tmp/timestamp.txt"
+if [ ! -f "${TIMESTAMP_FILE}" ]; then
+    echo "[ $(date) ] No kill-halt backoff active, continuing"
+else
+    current_time=$(date +%s)
+    _timestamp=$(cat "${TIMESTAMP_FILE}")
+    timestamp=$(date -d "${_timestamp}" +%s)
+    time_diff=$((current_time - timestamp))
+
+    if [ "$time_diff" -ge "$KILL_HALT_BACKOFF" ]; then
+        echo "[ $(date) ] Kill-halt backoff expired (${time_diff}s >= ${KILL_HALT_BACKOFF}s) — resuming"
+        rm -f "${TIMESTAMP_FILE}" 2>/dev/null
+    else
+        remaining=$((KILL_HALT_BACKOFF - time_diff))
+        echo "[ $(date) ] Kill-halt active (${POLICY}: ${KILL_HALT_BACKOFF}s). ${remaining}s remaining. Will not halt now."
+        exit 1
+    fi
 fi
 
 if [[ -z "$DTYPE" || "$DTYPE" == "0" ]]; then
@@ -60,13 +76,6 @@ if [[ -z "$DTYPE" || "$DTYPE" == "0" ]]; then
 else
     FILE="GPU_TEMP_"
 fi
-
-# Time-based idle window — SPOT/SEVERE get 15 min; everything else 2 h
-case "$POLICY" in
-    SPOT|SEVERE) WINDOW_SECONDS=$((15 * 60)) ;;
-    *)           WINDOW_SECONDS=$((2 * 60 * 60)) ;;
-esac
-echo "[ $(date) ] Instance: ${INSTANCE_ID}  Policy: ${POLICY}  Window: ${WINDOW_SECONDS}s"
 
 # ── AWS CLI health check ──────────────────────────────────────────────────────
 echo "[ $(date) ] Checking AWS CLI..."
@@ -112,15 +121,27 @@ fi
 
 NOGO="TRUE"
 REASON="NO_REASON"
+
+# Policy-specific wall message strings
+case "$POLICY" in
+    SPOT|SEVERE)
+        _idle_str="15 minutes"
+        _pause_str="30 minutes"
+        ;;
+    *)
+        _idle_str="2 hours"
+        _pause_str="2 hours"
+        ;;
+esac
 wall_message="
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-This instance:${INSTANCE_ID} seems to have been idle for the last
-2 hours, will shut it down in 3 minutes from now. If you just logged in,
+This instance:${INSTANCE_ID} (${POLICY}) seems to have been idle for the last
+${_idle_str}, will shut it down in 3 minutes from now. If you just logged in,
 please wait a couple of minutes and restart it from the AWS console, or type:
 
     sudo bash /root/gpumon/kill_halt.sh
 
-to stop the shutdown now. The shutdown pause will last 2 hours.
+to stop the shutdown now. The shutdown pause will last ${_pause_str}.
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
 
 # ── Collect log lines within the idle window ──────────────────────────────────
