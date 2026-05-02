@@ -42,6 +42,22 @@ if ! command -v docker &>/dev/null; then
     systemctl enable --now docker
 fi
 
+# GHA runner AMIs ship Docker from the Ubuntu universe repo without adding
+# Docker's official apt repo.  docker-compose-plugin only exists in Docker's
+# repo, so add it if it isn't already present.
+if ! grep -rq "download.docker.com" /etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null; then
+    echo "[autoinstall] Adding Docker official apt repo..."
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+        | gpg --batch --no-tty --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
+    _arch=$(dpkg --print-architecture)
+    _codename=$(. /etc/os-release && echo "$VERSION_CODENAME")
+    echo "deb [arch=${_arch} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${_codename} stable" \
+        | tee /etc/apt/sources.list.d/docker.list > /dev/null
+    apt-get -o DPkg::Lock::Timeout=120 update -q
+fi
+
 if ! docker compose version &>/dev/null; then
     echo "[autoinstall] Installing docker compose plugin..."
     apt-get -o DPkg::Lock::Timeout=120 install -y docker-compose-plugin
