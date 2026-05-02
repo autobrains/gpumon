@@ -12,8 +12,160 @@ HALT_HOST="/usr/local/sbin/halt_it.sh"
 UPDATE_SCRIPT="/usr/local/sbin/gpumon-update.sh"
 BOOT_SCRIPT="/usr/local/sbin/gpumon-boot.sh"
 
+# ── Service/script files (always refreshed, even on re-runs) ─────────────────
+# These run before the sentinel check so every Lambda-triggered re-run updates
+# halt_it.sh, gpumon-boot.sh, and gpumon-update.sh regardless of install state.
+# Fixes: old installs (sentinel exists) kept stale gpumon-boot.sh and missed the
+# NVML OCI-hook fix that was added after their initial installation.
+
+cp "${REPO_DIR}/halt_it.sh" "${HALT_HOST}"
+chmod +x "${HALT_HOST}"
+
+CRON_JOB="*/10 * * * * ${HALT_HOST} >> /var/log/halt_it.log 2>&1"
+if ! crontab -l 2>/dev/null | grep -q "halt_it.sh"; then
+    ( crontab -l 2>/dev/null; echo "$CRON_JOB" ) | crontab -
+    echo "[autoinstall] halt_it.sh cron job installed"
+else
+    echo "[autoinstall] halt_it.sh already in crontab"
+fi
+
+# ── Auto-update script ────────────────────────────────────────────────────────
+cat > "${UPDATE_SCRIPT}" << UPDATESCRIPT
+#!/bin/bash
+set -euo pipefail
+REPO_DIR="${REPO_DIR}"
+
+BEFORE=\$(git -C "\$REPO_DIR" rev-parse HEAD)
+git -C "\$REPO_DIR" fetch origin --quiet
+git -C "\$REPO_DIR" reset --hard @{upstream} --quiet
+AFTER=\$(git -C "\$REPO_DIR" rev-parse HEAD)
+
+if [ "\$BEFORE" = "\$AFTER" ]; then
+    echo "[\$(date)] gpumon-update: no changes"
+    exit 0
+fi
+
+echo "[\$(date)] gpumon-update: \$BEFORE -> \$AFTER — rebuilding container"
+cp "\${REPO_DIR}/halt_it.sh" "${HALT_HOST}"
+chmod +x "${HALT_HOST}"
+
+cd "\$REPO_DIR"
+if command -v nvidia-smi &>/dev/null \\
+        && nvidia-smi --list-gpus >/dev/null 2>&1 \\
+        && [ "\$(nvidia-smi --list-gpus | wc -l)" -gt 0 ]; then
+    docker compose up -d --build
+    sleep 8
+    _nvml_out=\$(docker exec gpumon-gpumon-1 nvidia-smi --list-gpus 2>&1 || true)
+    if echo "\$_nvml_out" | grep -qi "failed\|error\|unknown"; then
+        echo "[\$(date)] gpumon-update: NVML not ready (\${_nvml_out}) — recreating container..."
+        docker compose down && docker compose up -d
+        sleep 5
+    fi
+else
+    docker compose -f docker-compose.cpu.yml up -d --build
+fi
+echo "[\$(date)] gpumon-update: done"
+UPDATESCRIPT
+chmod +x "${UPDATE_SCRIPT}"
+
+# ── Boot reconciliation service ───────────────────────────────────────────────
+# Runs once after Docker starts on every boot.  Detects GPU presence and calls
+# docker compose up -d with the correct config so the container is always right
+# regardless of instance type changes (GPU ↔ CPU).  No image rebuild — fast.
+cat > "${BOOT_SCRIPT}" << BOOTSCRIPT
+#!/bin/bash
+set -euo pipefail
+REPO_DIR="${REPO_DIR}"
+cd "\$REPO_DIR"
+if command -v nvidia-smi &>/dev/null \\
+        && nvidia-smi --list-gpus >/dev/null 2>&1 \\
+        && [ "\$(nvidia-smi --list-gpus | wc -l)" -gt 0 ]; then
+    echo "[\$(date)] gpumon-boot: GPU detected"
+    # Install NVIDIA Container Toolkit if missing (handles CPU→GPU instance type change).
+    if ! dpkg -l nvidia-container-toolkit >/dev/null 2>&1; then
+        echo "[\$(date)] gpumon-boot: NVIDIA Container Toolkit missing — installing..."
+        systemctl stop unattended-upgrades apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
+        while fuser /var/lib/apt/lists/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock >/dev/null 2>&1; do
+            echo "[\$(date)] gpumon-boot: waiting for apt lock..."
+            sleep 5
+        done
+        curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \\
+            | gpg --batch --no-tty --yes --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+        curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \\
+            | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \\
+            | tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+        apt-get -o DPkg::Lock::Timeout=120 update -q
+        apt-get -o DPkg::Lock::Timeout=120 install -y nvidia-container-toolkit
+        nvidia-ctk runtime configure --runtime=docker
+        systemctl restart docker
+        timeout 30 bash -c 'until docker info >/dev/null 2>&1; do sleep 1; done'
+    fi
+    echo "[\$(date)] gpumon-boot: ensuring GPU compose"
+    docker compose up -d
+    sleep 8
+    _nvml_out=\$(docker exec gpumon-gpumon-1 nvidia-smi --list-gpus 2>&1 || true)
+    if echo "\$_nvml_out" | grep -qi "failed\|error\|unknown"; then
+        echo "[\$(date)] gpumon-boot: NVML not ready (\${_nvml_out}) — recreating container..."
+        docker compose down && docker compose up -d
+        sleep 5
+    fi
+else
+    echo "[\$(date)] gpumon-boot: no GPU — ensuring CPU compose"
+    docker compose -f docker-compose.cpu.yml up -d
+fi
+BOOTSCRIPT
+chmod +x "${BOOT_SCRIPT}"
+
+cat > /etc/systemd/system/gpumon-boot.service << 'EOF'
+[Unit]
+Description=gpumon boot-time container reconciliation
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/gpumon-boot.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > /etc/systemd/system/gpumon-update.service << 'EOF'
+[Unit]
+Description=gpumon auto-update
+After=network-online.target gpumon-boot.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/gpumon-update.sh
+StandardOutput=journal
+StandardError=journal
+EOF
+
+cat > /etc/systemd/system/gpumon-update.timer << 'EOF'
+[Unit]
+Description=gpumon auto-update timer
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+systemctl daemon-reload
+systemctl enable gpumon-boot.service
+systemctl enable --now gpumon-update.timer
+echo "[autoinstall] Service files refreshed"
+
+# ── Early exit if already fully installed ────────────────────────────────────
 if [ -f "$SENTINEL" ]; then
-    echo "[autoinstall] Already installed. Remove $SENTINEL to reinstall."
+    echo "[autoinstall] Already installed (service files refreshed above). Remove $SENTINEL to reinstall."
     exit 0
 fi
 
@@ -144,155 +296,6 @@ fi
 
 echo "[autoinstall] Container started:"
 docker ps --filter "name=gpumon" --format "  {{.Names}}  {{.Status}}"
-
-# ── halt_it.sh on host crontab ────────────────────────────────────────────────
-cp "${REPO_DIR}/halt_it.sh" "${HALT_HOST}"
-chmod +x "${HALT_HOST}"
-
-CRON_JOB="*/10 * * * * ${HALT_HOST} >> /var/log/halt_it.log 2>&1"
-if ! crontab -l 2>/dev/null | grep -q "halt_it.sh"; then
-    ( crontab -l 2>/dev/null; echo "$CRON_JOB" ) | crontab -
-    echo "[autoinstall] halt_it.sh cron job installed"
-else
-    echo "[autoinstall] halt_it.sh already in crontab"
-fi
-
-# ── Auto-update script ────────────────────────────────────────────────────────
-cat > "${UPDATE_SCRIPT}" << UPDATESCRIPT
-#!/bin/bash
-set -euo pipefail
-REPO_DIR="${REPO_DIR}"
-
-BEFORE=\$(git -C "\$REPO_DIR" rev-parse HEAD)
-git -C "\$REPO_DIR" fetch origin --quiet
-git -C "\$REPO_DIR" reset --hard @{upstream} --quiet
-AFTER=\$(git -C "\$REPO_DIR" rev-parse HEAD)
-
-if [ "\$BEFORE" = "\$AFTER" ]; then
-    echo "[\$(date)] gpumon-update: no changes"
-    exit 0
-fi
-
-echo "[\$(date)] gpumon-update: \$BEFORE -> \$AFTER — rebuilding container"
-cp "\${REPO_DIR}/halt_it.sh" "${HALT_HOST}"
-chmod +x "${HALT_HOST}"
-
-cd "\$REPO_DIR"
-if command -v nvidia-smi &>/dev/null \\
-        && nvidia-smi --list-gpus >/dev/null 2>&1 \\
-        && [ "\$(nvidia-smi --list-gpus | wc -l)" -gt 0 ]; then
-    docker compose up -d --build
-    sleep 8
-    _nvml_out=\$(docker exec gpumon-gpumon-1 nvidia-smi --list-gpus 2>&1 || true)
-    if echo "\$_nvml_out" | grep -qi "failed\|error\|unknown"; then
-        echo "[\$(date)] gpumon-update: NVML not ready (\${_nvml_out}) — recreating container..."
-        docker compose down && docker compose up -d
-        sleep 5
-    fi
-else
-    docker compose -f docker-compose.cpu.yml up -d --build
-fi
-echo "[\$(date)] gpumon-update: done"
-UPDATESCRIPT
-chmod +x "${UPDATE_SCRIPT}"
-
-# ── Boot reconciliation service ───────────────────────────────────────────────
-# Runs once after Docker starts on every boot.  Detects GPU presence and calls
-# docker compose up -d with the correct config so the container is always right
-# regardless of instance type changes (GPU ↔ CPU).  No image rebuild — fast.
-cat > "${BOOT_SCRIPT}" << BOOTSCRIPT
-#!/bin/bash
-set -euo pipefail
-REPO_DIR="${REPO_DIR}"
-cd "\$REPO_DIR"
-if command -v nvidia-smi &>/dev/null \\
-        && nvidia-smi --list-gpus >/dev/null 2>&1 \\
-        && [ "\$(nvidia-smi --list-gpus | wc -l)" -gt 0 ]; then
-    echo "[\$(date)] gpumon-boot: GPU detected"
-    # Install NVIDIA Container Toolkit if missing (handles CPU→GPU instance type change).
-    if ! dpkg -l nvidia-container-toolkit >/dev/null 2>&1; then
-        echo "[\$(date)] gpumon-boot: NVIDIA Container Toolkit missing — installing..."
-        systemctl stop unattended-upgrades apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
-        while fuser /var/lib/apt/lists/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock >/dev/null 2>&1; do
-            echo "[\$(date)] gpumon-boot: waiting for apt lock..."
-            sleep 5
-        done
-        curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \\
-            | gpg --batch --no-tty --yes --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
-        curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \\
-            | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \\
-            | tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
-        apt-get -o DPkg::Lock::Timeout=120 update -q
-        apt-get -o DPkg::Lock::Timeout=120 install -y nvidia-container-toolkit
-        nvidia-ctk runtime configure --runtime=docker
-        systemctl restart docker
-        timeout 30 bash -c 'until docker info >/dev/null 2>&1; do sleep 1; done'
-    fi
-    echo "[\$(date)] gpumon-boot: ensuring GPU compose"
-    docker compose up -d
-    sleep 8
-    _nvml_out=\$(docker exec gpumon-gpumon-1 nvidia-smi --list-gpus 2>&1 || true)
-    if echo "\$_nvml_out" | grep -qi "failed\|error\|unknown"; then
-        echo "[\$(date)] gpumon-boot: NVML not ready (\${_nvml_out}) — recreating container..."
-        docker compose down && docker compose up -d
-        sleep 5
-    fi
-else
-    echo "[\$(date)] gpumon-boot: no GPU — ensuring CPU compose"
-    docker compose -f docker-compose.cpu.yml up -d
-fi
-BOOTSCRIPT
-chmod +x "${BOOT_SCRIPT}"
-
-cat > /etc/systemd/system/gpumon-boot.service << 'EOF'
-[Unit]
-Description=gpumon boot-time container reconciliation
-After=docker.service
-Requires=docker.service
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/sbin/gpumon-boot.sh
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable gpumon-boot.service
-echo "[autoinstall] Boot reconciliation service enabled"
-
-# ── Systemd timer for hourly auto-updates ─────────────────────────────────────
-cat > /etc/systemd/system/gpumon-update.service << 'EOF'
-[Unit]
-Description=gpumon auto-update
-After=network-online.target gpumon-boot.service
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/sbin/gpumon-update.sh
-StandardOutput=journal
-StandardError=journal
-EOF
-
-cat > /etc/systemd/system/gpumon-update.timer << 'EOF'
-[Unit]
-Description=gpumon auto-update timer
-
-[Timer]
-OnBootSec=5min
-OnUnitActiveSec=1h
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-EOF
-
-systemctl daemon-reload
-systemctl enable --now gpumon-update.timer
 
 echo "[autoinstall] Auto-update timer enabled (fires 5 min post-boot, then every 1 h)"
 echo "[autoinstall] Installation complete."
