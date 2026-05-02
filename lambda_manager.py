@@ -63,7 +63,7 @@ FIX_STEP1_COMMANDS = [
     f"if nvidia-smi --list-gpus >/dev/null 2>&1 && [ \"$(nvidia-smi --list-gpus | wc -l)\" -gt 0 ]; then "
     f"  sudo docker compose -f {GPUMON_DIR}/docker-compose.yml up -d --build; "
     f"else "
-    f"  sudo docker compose -f {GPUMON_DIR}/docker-compose.yml -f {GPUMON_DIR}/docker-compose.cpu.yml up -d --build; "
+    f"  sudo docker compose -f {GPUMON_DIR}/docker-compose.cpu.yml up -d --build; "
     f"fi",
 ]
 

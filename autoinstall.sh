@@ -96,8 +96,8 @@ if $HAS_GPU; then
     docker compose build
     docker compose up -d
 else
-    docker compose -f docker-compose.yml -f docker-compose.cpu.yml build
-    docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d
+    docker compose -f docker-compose.cpu.yml build
+    docker compose -f docker-compose.cpu.yml up -d
 fi
 
 echo "[autoinstall] Container started:"
@@ -141,7 +141,7 @@ if command -v nvidia-smi &>/dev/null \\
         && [ "\$(nvidia-smi --list-gpus | wc -l)" -gt 0 ]; then
     docker compose up -d --build
 else
-    docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d --build
+    docker compose -f docker-compose.cpu.yml up -d --build
 fi
 echo "[\$(date)] gpumon-update: done"
 UPDATESCRIPT
@@ -184,7 +184,7 @@ if command -v nvidia-smi &>/dev/null \\
     docker compose up -d
 else
     echo "[\$(date)] gpumon-boot: no GPU — ensuring CPU compose"
-    docker compose -f docker-compose.yml -f docker-compose.cpu.yml up -d
+    docker compose -f docker-compose.cpu.yml up -d
 fi
 BOOTSCRIPT
 chmod +x "${BOOT_SCRIPT}"
