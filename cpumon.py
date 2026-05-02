@@ -118,6 +118,7 @@ def main() -> None:
     restart_backoff   = cfg["restart_backoff"]
     cpu_threshold     = cfg["cpu_threshold"]
     network_threshold = cfg["network_threshold"]
+    shutdown_eta      = cfg["shutdown_eta"]
 
     shutdown_cooldown_hours = float(os.getenv("SHUTDOWN_ALERT_COOLDOWN_HOURS", "4"))
 
@@ -144,6 +145,7 @@ def main() -> None:
                     restart_backoff   = cfg["restart_backoff"]
                     cpu_threshold     = cfg["cpu_threshold"]
                     network_threshold = cfg["network_threshold"]
+                    shutdown_eta      = cfg["shutdown_eta"]
             except Exception as exc:
                 print(f"policy refresh error: {exc}")
 
@@ -182,7 +184,7 @@ def main() -> None:
                         dm_client.send_dm(
                             emp_name,
                             f":alarm_clock: Your instance *{instance_name}* appears idle "
-                            f"and is scheduled to shut down in ~3 hours.",
+                            f"and is scheduled to shut down in {shutdown_eta}.",
                         )
             else:
                 if alarm_pilot_light == 1:
