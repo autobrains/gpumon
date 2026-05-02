@@ -89,7 +89,16 @@ if $HAS_GPU && ! dpkg -l nvidia-container-toolkit &>/dev/null 2>&1; then
     systemctl restart docker
     timeout 30 bash -c 'until docker info &>/dev/null 2>&1; do sleep 1; done'
 elif $HAS_GPU; then
-    echo "[autoinstall] NVIDIA Container Toolkit already installed — skipping"
+    echo "[autoinstall] NVIDIA Container Toolkit already installed"
+    # Re-run configure if the nvidia runtime is missing from Docker.
+    # This handles a partial prior run that installed the toolkit but was
+    # interrupted before nvidia-ctk runtime configure / docker restart.
+    if ! docker info --format '{{range $k, $v := .Runtimes}}{{$k}} {{end}}' 2>/dev/null | grep -qw nvidia; then
+        echo "[autoinstall] Registering nvidia Docker runtime..."
+        nvidia-ctk runtime configure --runtime=docker
+        systemctl restart docker
+        timeout 30 bash -c 'until docker info &>/dev/null 2>&1; do sleep 1; done'
+    fi
 fi
 
 # ── Auto-generate .env from Secrets Manager if not present ────────────────────
