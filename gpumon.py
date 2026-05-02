@@ -168,9 +168,9 @@ def main() -> None:
         policy = "STANDARD"
         create_tag(ec2, instance_id, "GPUMON_POLICY", policy)
 
-    # SPOT instances: never DM the employee
+    # SPOT/SEVERE: no idle shutdown DM (disk/memory alerts handled by hostmon.py)
     page_employee = (
-        policy != "SPOT"
+        policy not in ("SPOT", "SEVERE")
         and tags.get("PAGE_EMPLOYEE", "True").lower() != "false"
     )
 

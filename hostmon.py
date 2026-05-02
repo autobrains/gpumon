@@ -134,18 +134,14 @@ def main() -> None:
     emp_name      = tags.get("Employee", "NO_TAG")
     policy        = tags.get("GPUMON_POLICY", "STANDARD")
 
-    # SPOT instances: never DM the employee
-    page_employee = (
-        policy != "SPOT"
-        and tags.get("PAGE_EMPLOYEE", "True").lower() != "false"
-    )
+    page_employee = tags.get("PAGE_EMPLOYEE", "True").lower() != "false"
 
     # Alert thresholds from env (with defaults)
     disk_alert_free_pct  = float(os.getenv("DISK_ALERT_FREE_PCT",    "10"))
     mem_alert_used_pct   = float(os.getenv("MEMORY_ALERT_USED_PCT",  "90"))
     alert_cooldown_hours = float(os.getenv("ALERT_COOLDOWN_HOURS",   "12"))
 
-    # Slack DM client — None if secret not configured, unreachable, or SPOT/disabled
+    # Slack DM client — None if secret not configured, unreachable, or PAGE_EMPLOYEE=false
     slack_secret_id     = os.getenv("GPUMON_SLACK_SECRET_ID", "IT/SLACK_BOT_TOKEN")
     slack_secret_region = os.getenv("GPUMON_SLACK_SECRET_REGION", os.getenv("GPUMON_SECRET_REGION", "eu-west-1"))
     dm_client = build_slack_dm_client(slack_secret_id, slack_secret_region) if page_employee else None
