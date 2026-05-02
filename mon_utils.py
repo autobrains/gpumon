@@ -70,7 +70,7 @@ POLICIES: dict[str, dict[str, int]] = {
     "SEVERE":   {"restart_backoff": 0,      "cpu_threshold": 20, "gpu_threshold": 2,  "network_threshold": 15000},
     "SPOT":     {"restart_backoff": 0,      "cpu_threshold": 20, "gpu_threshold": 10, "network_threshold": 30000},
     "SUSPEND":  {"restart_backoff": 864000, "cpu_threshold": 10, "gpu_threshold": 10, "network_threshold": 15000},
-    "STANDARD": {"restart_backoff": 3600,   "cpu_threshold": 10, "gpu_threshold": 10, "network_threshold": 15000},
+    "STANDARD": {"restart_backoff": 0,       "cpu_threshold": 10, "gpu_threshold": 10, "network_threshold": 15000},
 }
 
 

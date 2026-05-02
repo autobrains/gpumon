@@ -44,6 +44,10 @@ case "$POLICY" in
         WINDOW_SECONDS=$((15 * 60))
         KILL_HALT_BACKOFF=$((30 * 60))
         ;;
+    STANDARD)
+        WINDOW_SECONDS=$((60 * 60))
+        KILL_HALT_BACKOFF=$((2 * 60 * 60))
+        ;;
     *)
         WINDOW_SECONDS=$((2 * 60 * 60))
         KILL_HALT_BACKOFF=$((2 * 60 * 60))
@@ -127,6 +131,10 @@ case "$POLICY" in
     SPOT|SEVERE)
         _idle_str="15 minutes"
         _pause_str="30 minutes"
+        ;;
+    STANDARD)
+        _idle_str="1 hour"
+        _pause_str="2 hours"
         ;;
     *)
         _idle_str="2 hours"
