@@ -124,13 +124,13 @@ else
 fi
 
 # ── Build and start container ─────────────────────────────────────────────────
+# Use up --build rather than separate build + up: standalone "docker compose build"
+# exits non-zero on some Compose v5 hosts (getwd bug) even when the image is built.
 cd "$REPO_DIR"
 if $HAS_GPU; then
-    docker compose build
-    docker compose up -d
+    docker compose up -d --build
 else
-    docker compose -f docker-compose.cpu.yml build
-    docker compose -f docker-compose.cpu.yml up -d
+    docker compose -f docker-compose.cpu.yml up -d --build
 fi
 
 echo "[autoinstall] Container started:"
