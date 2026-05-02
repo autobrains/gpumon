@@ -244,6 +244,19 @@ if [ "${NOGO}" == "TRUE" ]; then
     echo "[ $(date) ] NO-GO: ${REASON}"
 else
     echo "[ $(date) ] GO — shutting down. Reason: ${REASON}" | tee -a /root/gpumon_persistent.log
+
+    # Dry-run before broadcasting — prevents wall-message spam when creds lack permission.
+    # DryRunOperation = authorized; UnauthorizedOperation = not authorized.
+    if [ "${POLICY}" == "SPOT" ]; then
+        _dryrun=$(aws ec2 terminate-instances --instance-ids "${INSTANCE_ID}" --region "${AWSREGION}" --dry-run 2>&1)
+    else
+        _dryrun=$(aws ec2 stop-instances --instance-ids "${INSTANCE_ID}" --region "${AWSREGION}" --dry-run 2>&1)
+    fi
+    if echo "${_dryrun}" | grep -qi "UnauthorizedOperation"; then
+        echo "[ $(date) ] AWS permission check failed — aborting broadcast: ${_dryrun}" | tee -a /root/gpumon_persistent.log
+        exit 1
+    fi
+
     wall "[ $(date) ] ${wall_message}"
     sleep 180
     wall "[ $(date) ] 3 minutes passed — shutting down now. Bye!"
@@ -251,6 +264,10 @@ else
         res=$(aws ec2 terminate-instances --instance-ids "${INSTANCE_ID}" --region "${AWSREGION}" 2>&1)
     else
         res=$(aws ec2 stop-instances --instance-ids "${INSTANCE_ID}" --region "${AWSREGION}" 2>&1)
+    fi
+    if echo "${res}" | grep -qi "error\|Exception"; then
+        echo "[ $(date) ] AWS shutdown call failed: ${res}" | tee -a /root/gpumon_persistent.log
+        exit 1
     fi
     echo "[ $(date) ] AWS result: ${res}"
 fi
