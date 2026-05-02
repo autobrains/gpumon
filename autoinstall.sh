@@ -26,6 +26,11 @@ while fuser /var/lib/apt/lists/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-fronte
     sleep 5
 done
 
+# ── Remove stale third-party repos that poison apt-get update ────────────────
+# GHA runner AMIs ship a kubic/libcontainers repo whose GPG key expires, causing
+# "unable to locate package docker-compose-plugin" even when the repo is reachable.
+rm -f /etc/apt/sources.list.d/*kubic* /etc/apt/sources.list.d/*libcontainers* 2>/dev/null || true
+
 # ── System packages ───────────────────────────────────────────────────────────
 apt-get -o DPkg::Lock::Timeout=120 update -q
 apt-get -o DPkg::Lock::Timeout=120 install -y git cron curl gnupg ca-certificates
