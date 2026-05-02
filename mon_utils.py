@@ -123,16 +123,14 @@ def get_network_stats(cw_client: Any, instance_id: str, prev_network: float) -> 
     packets_in = _query("NetworkPacketsIn")
     packets_out = _query("NetworkPacketsOut")
 
-    # When CW data is missing treat the network as active (not idle).
-    # Halving toward zero on repeated misses would eventually trigger a false shutdown.
-    # A large sentinel value safely clears every policy threshold.
-    _MISSING = 1_000_000.0
-    if packets_in is None:
-        print("NetworkPacketsIn: no datapoints — treating as active to prevent false idle")
-        packets_in = _MISSING
-    if packets_out is None:
-        print("NetworkPacketsOut: no datapoints — treating as active to prevent false idle")
-        packets_out = _MISSING
+    if packets_in is None or packets_out is None:
+        # CW basic monitoring has a ~1-2 min publication lag; brief gaps are normal.
+        # Return the previous value so a short CW gap doesn't invalidate the halt window.
+        # A sustained 15-min CW outage (needed to trigger a false idle) is far less
+        # likely than the old 2M sentinel repeatedly blocking legitimate shutdowns.
+        print(f"NetworkPacketsIn={packets_in} NetworkPacketsOut={packets_out}: "
+              f"CW datapoint missing — reusing prev_network={prev_network}")
+        return prev_network
 
     return round(packets_in) + round(packets_out)
 
