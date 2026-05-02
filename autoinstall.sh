@@ -131,10 +131,10 @@ if $HAS_GPU; then
     # nvidia-container-runtime can take a moment to fully initialize after Docker
     # restarts; NVML fails inside the container on first start if the OCI prestart
     # hook fires before the runtime is ready.  One restart always resolves it.
-    sleep 5
+    sleep 8
     if ! docker exec gpumon-gpumon-1 nvidia-smi --list-gpus >/dev/null 2>&1; then
-        echo "[autoinstall] NVML not ready — restarting container once..."
-        docker compose restart
+        echo "[autoinstall] NVML not ready — recreating container to re-run OCI prestart hook..."
+        docker compose down && docker compose up -d
         sleep 5
     fi
 else
