@@ -182,6 +182,13 @@ if command -v nvidia-smi &>/dev/null \\
         && nvidia-smi --list-gpus >/dev/null 2>&1 \\
         && [ "\$(nvidia-smi --list-gpus | wc -l)" -gt 0 ]; then
     docker compose up -d --build
+    sleep 8
+    _nvml_out=\$(docker exec gpumon-gpumon-1 nvidia-smi --list-gpus 2>&1 || true)
+    if echo "\$_nvml_out" | grep -qi "failed\|error\|unknown"; then
+        echo "[\$(date)] gpumon-update: NVML not ready (\${_nvml_out}) — recreating container..."
+        docker compose down && docker compose up -d
+        sleep 5
+    fi
 else
     docker compose -f docker-compose.cpu.yml up -d --build
 fi
@@ -223,6 +230,13 @@ if command -v nvidia-smi &>/dev/null \\
     fi
     echo "[\$(date)] gpumon-boot: ensuring GPU compose"
     docker compose up -d
+    sleep 8
+    _nvml_out=\$(docker exec gpumon-gpumon-1 nvidia-smi --list-gpus 2>&1 || true)
+    if echo "\$_nvml_out" | grep -qi "failed\|error\|unknown"; then
+        echo "[\$(date)] gpumon-boot: NVML not ready (\${_nvml_out}) — recreating container..."
+        docker compose down && docker compose up -d
+        sleep 5
+    fi
 else
     echo "[\$(date)] gpumon-boot: no GPU — ensuring CPU compose"
     docker compose -f docker-compose.cpu.yml up -d
