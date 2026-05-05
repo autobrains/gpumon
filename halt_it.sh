@@ -36,6 +36,14 @@ if [ -z "${POLICY}" ] || [ "${POLICY}" = "None" ]; then
     POLICY="STANDARD"
 fi
 
+# Project tag — fetched fresh; used to select ASG-aware termination for SPOT
+PROJECT=$(aws ec2 describe-tags \
+    --filters "Name=resource-id,Values=${INSTANCE_ID}" "Name=key,Values=Project" \
+    --query "Tags[0].Value" --output text --region "${AWSREGION}" 2>/dev/null)
+if [ -z "${PROJECT}" ] || [ "${PROJECT}" = "None" ]; then
+    PROJECT=""
+fi
+
 # ── Policy-derived durations ──────────────────────────────────────────────────
 # SPOT/SEVERE have a 15-min idle window; their kill-halt backoff is 2x that.
 # All other policies use a 2-hour idle window with a matching 2-hour backoff.
@@ -56,7 +64,7 @@ case "$POLICY" in
         MIN_UPTIME_SECS=0
         ;;
 esac
-echo "[ $(date) ] Instance: ${INSTANCE_ID}  Policy: ${POLICY}  Window: ${WINDOW_SECONDS}s  KillHaltBackoff: ${KILL_HALT_BACKOFF}s  MinUptime: ${MIN_UPTIME_SECS}s"
+echo "[ $(date) ] Instance: ${INSTANCE_ID}  Policy: ${POLICY}  Project: ${PROJECT:-none}  Window: ${WINDOW_SECONDS}s  KillHaltBackoff: ${KILL_HALT_BACKOFF}s  MinUptime: ${MIN_UPTIME_SECS}s"
 
 # ── kill-halt backoff check ───────────────────────────────────────────────────
 TIMESTAMP_FILE="/tmp/timestamp.txt"
@@ -248,21 +256,39 @@ else
     echo "[ $(date) ] GO — shutting down. Reason: ${REASON}" | tee -a /root/gpumon_persistent.log
 
     # Dry-run before broadcasting — prevents wall-message spam when creds lack permission.
-    # DryRunOperation = authorized; UnauthorizedOperation = not authorized.
-    if [ "${POLICY}" == "SPOT" ]; then
+    # FH-PIPELINE SPOT instances live in an ASG; use describe-auto-scaling-instances as a
+    # permission probe (ASG terminate has no --dry-run flag). For all other cases use the
+    # standard EC2 --dry-run: DryRunOperation = authorized, UnauthorizedOperation = denied.
+    if [ "${POLICY}" == "SPOT" ] && [ "${PROJECT}" == "FH-PIPELINE" ]; then
+        _dryrun=$(aws autoscaling describe-auto-scaling-instances \
+            --instance-ids "${INSTANCE_ID}" --region "${AWSREGION}" 2>&1)
+        if echo "${_dryrun}" | grep -qi "error\|AccessDenied\|AuthFailure"; then
+            echo "[ $(date) ] ASG permission check failed — aborting broadcast: ${_dryrun}" | tee -a /root/gpumon_persistent.log
+            exit 1
+        fi
+    elif [ "${POLICY}" == "SPOT" ]; then
         _dryrun=$(aws ec2 terminate-instances --instance-ids "${INSTANCE_ID}" --region "${AWSREGION}" --dry-run 2>&1)
+        if echo "${_dryrun}" | grep -qi "UnauthorizedOperation"; then
+            echo "[ $(date) ] AWS permission check failed — aborting broadcast: ${_dryrun}" | tee -a /root/gpumon_persistent.log
+            exit 1
+        fi
     else
         _dryrun=$(aws ec2 stop-instances --instance-ids "${INSTANCE_ID}" --region "${AWSREGION}" --dry-run 2>&1)
-    fi
-    if echo "${_dryrun}" | grep -qi "UnauthorizedOperation"; then
-        echo "[ $(date) ] AWS permission check failed — aborting broadcast: ${_dryrun}" | tee -a /root/gpumon_persistent.log
-        exit 1
+        if echo "${_dryrun}" | grep -qi "UnauthorizedOperation"; then
+            echo "[ $(date) ] AWS permission check failed — aborting broadcast: ${_dryrun}" | tee -a /root/gpumon_persistent.log
+            exit 1
+        fi
     fi
 
     wall "[ $(date) ] ${wall_message}"
     sleep 180
     wall "[ $(date) ] 3 minutes passed — shutting down now. Bye!"
-    if [ "${POLICY}" == "SPOT" ]; then
+    if [ "${POLICY}" == "SPOT" ] && [ "${PROJECT}" == "FH-PIPELINE" ]; then
+        res=$(aws autoscaling terminate-instance-in-auto-scaling-group \
+            --instance-id "${INSTANCE_ID}" \
+            --should-decrement-desired-capacity \
+            --region "${AWSREGION}" 2>&1)
+    elif [ "${POLICY}" == "SPOT" ]; then
         res=$(aws ec2 terminate-instances --instance-ids "${INSTANCE_ID}" --region "${AWSREGION}" 2>&1)
     else
         res=$(aws ec2 stop-instances --instance-ids "${INSTANCE_ID}" --region "${AWSREGION}" 2>&1)
