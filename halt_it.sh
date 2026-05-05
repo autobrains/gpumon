@@ -102,8 +102,10 @@ fi
 echo "[ $(date) ] Checking AWS CLI..."
 if ! timeout 30 aws sts get-caller-identity --region "${AWSREGION}" &>/dev/null; then
     echo "[ $(date) ] AWS CLI not working, attempting reinstall..."
-    DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y awscli || \
-        timeout 120 python3 -m pip install --upgrade awscli boto3 botocore || true
+    DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 update -q && \
+        apt-get -o DPkg::Lock::Timeout=120 install -y awscli || \
+        timeout 120 python3 -m pip install --break-system-packages --upgrade awscli boto3 botocore || \
+        snap install aws-cli --classic 2>/dev/null || true
 fi
 
 # ── Credentials via Secrets Manager ──────────────────────────────────────────
