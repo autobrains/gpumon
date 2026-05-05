@@ -77,6 +77,15 @@ cat > "${BOOT_SCRIPT}" << BOOTSCRIPT
 set -euo pipefail
 REPO_DIR="${REPO_DIR}"
 cd "\$REPO_DIR"
+
+# The legacy gpumon.service (pre-Docker) runs early at boot before Docker is ready.
+# Stop and disable it so it doesn't run alongside the Docker container.
+systemctl stop gpumon.service 2>/dev/null || true
+systemctl disable gpumon.service 2>/dev/null || true
+pkill -f "python3 /root/gpumon/gpumon.py" 2>/dev/null || true
+pkill -f "python3 /root/gpumon/cpumon.py" 2>/dev/null || true
+pkill -f "python3 /root/gpumon/hostmon.py" 2>/dev/null || true
+
 if command -v nvidia-smi &>/dev/null \\
         && nvidia-smi --list-gpus >/dev/null 2>&1 \\
         && [ "\$(nvidia-smi --list-gpus | wc -l)" -gt 0 ]; then
