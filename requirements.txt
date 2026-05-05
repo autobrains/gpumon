@@ -1,0 +1,4 @@
+boto3>=1.34.0
+psutil>=5.9.0
+nvidia-ml-py>=12.535.0
+slack-sdk>=3.27.0

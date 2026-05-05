@@ -1,0 +1,18 @@
+services:
+  gpumon:
+    build: .
+    restart: unless-stopped
+    runtime: nvidia
+    network_mode: host
+    pid: host
+    volumes:
+      - /tmp:/tmp
+    env_file:
+      - .env
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

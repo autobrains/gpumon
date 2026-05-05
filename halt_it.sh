@@ -1,208 +1,275 @@
 #!/bin/bash
-#This script parses gpumon logs and if it finds out that Alarm_Pilot was 
-#present ONLY with value "1" for last 2 hours it will shut down the instance it runs on, 
-#it is intended to be run as cronjob every 10 minutes. (c)Paul Seifer, Autobrains LTD
-# something like: */10 * * * * bash /root/gpumon/halt_it.sh | tee -a /tmp/halt_it_log.txt
+# Parse gpumon logs; if Alarm_Pilot was "1" for the idle window, stop/terminate
+# the instance.  Intended to run as a cron job every 10 minutes.
+# (c) Paul Seifer, Autobrains LTD
+#
+# Example cron entry:
+#   */10 * * * * bash /root/gpumon/halt_it.sh | tee -a /tmp/halt_it_log.txt
+
+# ── IMDS + identity ───────────────────────────────────────────────────────────
+# Always fetch fresh — IMDS calls are fast (<5 ms on EC2) and caching caused
+# stale-DTYPE bugs after instance type changes and stale INSTANCE_ID after AMI cloning.
+TOKEN=$(curl -s --max-time 5 -X PUT "http://169.254.169.254/latest/api/token" \
+    -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null)
+AWSREGION=$(curl -s --max-time 5 -H "X-aws-ec2-metadata-token: $TOKEN" \
+    http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null)
+INSTANCE_ID=$(curl -s --max-time 5 -H "X-aws-ec2-metadata-token: $TOKEN" \
+    http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null)
+
+if [[ -z "$AWSREGION" ]] || [[ "${INSTANCE_ID}" == "" ]] || [[ "$(echo "${INSTANCE_ID}" | grep -E 'i-[a-f0-9]{8,17}')" == "" ]]; then
+    echo "[ $(date) ] IMDS unreachable or returned bad values (INSTANCE_ID='${INSTANCE_ID}' AWSREGION='${AWSREGION}'), exiting"
+    exit 1
+fi
+
+if nvidia-smi --list-gpus >/dev/null 2>&1; then
+    DTYPE=$(nvidia-smi --list-gpus | wc -l)
+else
+    DTYPE="0"
+fi
+
+# POLICY is always fetched fresh so tag changes take effect on the next cron run
+POLICY=$(aws ec2 describe-tags \
+    --filters "Name=resource-id,Values=${INSTANCE_ID}" "Name=key,Values=GPUMON_POLICY" \
+    --query "Tags[0].Value" --output text --region "${AWSREGION}" 2>/dev/null)
+# Treat missing/None tag as STANDARD
+if [ -z "${POLICY}" ] || [ "${POLICY}" = "None" ]; then
+    POLICY="STANDARD"
+fi
+
+# ── Policy-derived durations ──────────────────────────────────────────────────
+# SPOT/SEVERE have a 15-min idle window; their kill-halt backoff is 2x that.
+# All other policies use a 2-hour idle window with a matching 2-hour backoff.
+case "$POLICY" in
+    SPOT|SEVERE)
+        WINDOW_SECONDS=$((15 * 60))
+        KILL_HALT_BACKOFF=$((30 * 60))
+        MIN_UPTIME_SECS=0
+        ;;
+    STANDARD)
+        WINDOW_SECONDS=$((60 * 60))
+        KILL_HALT_BACKOFF=$((2 * 60 * 60))
+        MIN_UPTIME_SECS=$((2 * 60 * 60))
+        ;;
+    *)
+        WINDOW_SECONDS=$((2 * 60 * 60))
+        KILL_HALT_BACKOFF=$((2 * 60 * 60))
+        MIN_UPTIME_SECS=0
+        ;;
+esac
+echo "[ $(date) ] Instance: ${INSTANCE_ID}  Policy: ${POLICY}  Window: ${WINDOW_SECONDS}s  KillHaltBackoff: ${KILL_HALT_BACKOFF}s  MinUptime: ${MIN_UPTIME_SECS}s"
+
+# ── kill-halt backoff check ───────────────────────────────────────────────────
 TIMESTAMP_FILE="/tmp/timestamp.txt"
 if [ ! -f "${TIMESTAMP_FILE}" ]; then
-    echo "[ $(date) ] Stop file not found, will continue the script"
+    echo "[ $(date) ] No kill-halt backoff active, continuing"
 else
     current_time=$(date +%s)
     _timestamp=$(cat "${TIMESTAMP_FILE}")
     timestamp=$(date -d "${_timestamp}" +%s)
     time_diff=$((current_time - timestamp))
-    two_hours=$((2 * 60 * 60))  # 2 hours in seconds
 
-    if [ $time_diff -ge $two_hours ]; then
-        echo "[ $(date) ] More than 2 hours have passed since the timestamp."
-        rm -f ${TIMESTAMP_FILE} 2>/dev/null
+    if [ "$time_diff" -ge "$KILL_HALT_BACKOFF" ]; then
+        echo "[ $(date) ] Kill-halt backoff expired (${time_diff}s >= ${KILL_HALT_BACKOFF}s) — resuming"
+        rm -f "${TIMESTAMP_FILE}" 2>/dev/null
     else
-        remaining=$((two_hours - time_diff))
-        echo "[ $(date) ] Less than 2 hours have passed. $remaining seconds remaining. will not halt the server now"
+        remaining=$((KILL_HALT_BACKOFF - time_diff))
+        echo "[ $(date) ] Kill-halt active (${POLICY}: ${KILL_HALT_BACKOFF}s). ${remaining}s remaining. Will not halt now."
         exit 1
     fi
 fi
-HALT_FILE=/tmp/halt_it.info
 
-# Function to populate vars from IMDS + EC2 tags
-fetch_metadata() {
-    TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
-        -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null)
-    AWSREGION=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
-        http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null)
-    INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
-        http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null)
-    POLICY=$(aws ec2 describe-tags \
-        --filters "Name=resource-id,Values=$INSTANCE_ID" "Name=key,Values=GPUMON_POLICY" \
-        --query "Tags[0].Value" --output text --region "$AWSREGION")
-
-    if nvidia-smi --list-gpus >/dev/null 2>&1; then
-        DTYPE=$(nvidia-smi --list-gpus | wc -l)
-    else
-        DTYPE="0"
-    fi
-}
-
-if [ ! -s "$HALT_FILE" ]; then
-    fetch_metadata
-    {
-        echo "INSTANCE_ID=${INSTANCE_ID}"
-        echo "DTYPE=${DTYPE}"
-        echo "AWSREGION=${AWSREGION}"
-        echo "POLICY=${POLICY}"
-    } > "$HALT_FILE"
-else
-    INSTANCE_ID=$(grep "^INSTANCE_ID=" "$HALT_FILE" | cut -d= -f2)
-    DTYPE=$(grep "^DTYPE=" "$HALT_FILE" | cut -d= -f2)
-    AWSREGION=$(grep "^AWSREGION=" "$HALT_FILE" | cut -d= -f2)
-    POLICY=$(grep "^POLICY=" "$HALT_FILE" | cut -d= -f2)
-fi
-
-# If any value is empty, the cached file is bad — drop it and refetch
-if [ -z "$INSTANCE_ID" ] || [ -z "$DTYPE" ] || [ -z "$AWSREGION" ] || [ -z "$POLICY" ]; then
-    rm -f "$HALT_FILE"
-    fetch_metadata
-    {
-        echo "INSTANCE_ID=${INSTANCE_ID}"
-        echo "DTYPE=${DTYPE}"
-        echo "AWSREGION=${AWSREGION}"
-        echo "POLICY=${POLICY}"
-    } > "$HALT_FILE"
-fi
-
-if [[ "${INSTANCE_ID}" == "" ]] || [[ "$(echo ${INSTANCE_ID} | grep -E 'i-[a-f0-9]{8,17}')" == "" ]]; then
-        echo "[ $(date) ] Need INSTANCE_ID, like: i-02cb1c2e2dececfcd, exiting"
+# ── Boot-time uptime guard ────────────────────────────────────────────────────
+# Guarantees a minimum on-time after boot regardless of idle state.
+# Separate from kill_halt (user-triggered); this fires automatically.
+# restart_backoff=0 in mon_utils.py lets the pilot track real idleness from
+# boot so that idle time logged during boot counts toward the halt window.
+if [ "${MIN_UPTIME_SECS}" -gt 0 ]; then
+    uptime_secs=$(awk '{print int($1)}' /proc/uptime)
+    if [ "${uptime_secs}" -lt "${MIN_UPTIME_SECS}" ]; then
+        remaining=$((MIN_UPTIME_SECS - uptime_secs))
+        echo "[ $(date) ] Boot guard active (${POLICY}: uptime=${uptime_secs}s < ${MIN_UPTIME_SECS}s). ${remaining}s remaining. Will not halt now."
         exit 1
+    fi
 fi
+
 if [[ -z "$DTYPE" || "$DTYPE" == "0" ]]; then
-    SEP=6
     FILE="CPUMON_LOGS_"
-    DEFAULT_STEP=500
 else
-    SEP=12
     FILE="GPU_TEMP_"
-    if [ "$DTYPE" -lt 4 ]; then
-        DEFAULT_STEP=500    # single GPU = 1 line/log, 500 lines ≈ 2h
-    else
-        DEFAULT_STEP=2000   # 4 GPUs = 4 lines/log
-    fi
 fi
 
-# Aggressive-idle policies: 15 minutes regardless of GPU/CPU
-case "$POLICY" in
-    SPOT|SEVERE)
-        STEP=90
-        ;;
-    *)
-        STEP=$DEFAULT_STEP
-        ;;
-esac
-echo "[ $(date) ] The instance:${INSTANCE_ID} Tag is:${POLICY} and the STEP therefore is:${STEP}"
-echo "[ $(date) ] Is AWS cli installed?"
-check=$(aws s3 ls 2>&1 | grep "snap")
-if [ "${check}" != "" ]; then
-   echo "[ $(date) ] need to fix, will run: apt install awscli"
-   DEBIAN_FRONTEND=noninteractive apt install -y awscli
-   echo "[ $(date) ] done fixin"
- else
-   echo "[ $(date) ] no problem with awscli...continue..."
+# ── AWS CLI health check ──────────────────────────────────────────────────────
+echo "[ $(date) ] Checking AWS CLI..."
+if ! timeout 30 aws sts get-caller-identity --region "${AWSREGION}" &>/dev/null; then
+    echo "[ $(date) ] AWS CLI not working, attempting reinstall..."
+    DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 update -q && \
+        apt-get -o DPkg::Lock::Timeout=120 install -y awscli || \
+        timeout 120 python3 -m pip install --break-system-packages --upgrade awscli boto3 botocore || \
+        snap install aws-cli --classic 2>/dev/null || true
 fi
-echo "[ $(date) ] Checking awscli validity"
-check=$(aws s3 ls 2>&1 | grep docevents | grep cannot);
-if [ "${check}" != "" ]; then
-   echo "[ $(date) ] need to fix, will run: python3 -m pip install --upgrade boto3 botocore awscli"
-   python3 -m pip install --upgrade boto3 botocore awscli
-   echo "[ $(date) ] done fixin"
- else
-   echo "[ $(date) ] no problem with awscli...continue..."
+
+# ── Credentials via Secrets Manager ──────────────────────────────────────────
+# The secret lives in a specific region (may differ from the instance region).
+# Override with GPUMON_SECRET_REGION / GPUMON_SECRET_ID env vars as needed.
+SECRET_ID="${GPUMON_SECRET_ID:-AB/InstanceRole}"
+SECRET_REGION="${GPUMON_SECRET_REGION:-eu-west-1}"
+echo "[ $(date) ] Getting creds from SM (secret: ${SECRET_ID} region: ${SECRET_REGION})..."
+
+# Ensure jq is available for robust JSON parsing
+if ! command -v jq &>/dev/null; then
+    DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 install -y jq -q 2>/dev/null || true
 fi
-check=$(sudo aws s3 ls 2>&1 | grep docevents | grep cannot);
-if [ "${check}" != "" ]; then
-   echo "[ $(date) ] need to fix, will run: sudo python3 -m pip install --upgrade boto3 botocore awscli"
-   sudo python3 -m pip install --upgrade boto3 botocore awscli --break-system-packages
-   echo "[ $(date) ] done fixin"
- else
-   echo "[ $(date) ] no problem with sudo awscli...continue..."
-fi
-echo "[ $(date) ] Getting creds from SM..."
-creds_tmp=$(aws secretsmanager get-secret-value --secret-id "AB/InstanceRole" --region eu-west-1 |grep SecretString | rev | cut -c2- | rev | cut -d ":" -f2- | tr -d " " | tr -d '"')
-if [ "${creds_tmp}" == "" ]; then
-        echo "[ $(date) ] Warning, could not get creds from SM, will use whatever Role current user has:$(aws sts get-caller-identity)"
+
+secret_json=$(aws secretsmanager get-secret-value \
+    --secret-id "${SECRET_ID}" \
+    --region "${SECRET_REGION}" \
+    --query "SecretString" \
+    --output text 2>/dev/null)
+
+if [ -z "${secret_json}" ] || [ "${secret_json}" = "None" ]; then
+    echo "[ $(date) ] Warning: could not get creds from SM, using instance role: $(aws sts get-caller-identity 2>/dev/null)"
+elif command -v jq &>/dev/null; then
+    export AWS_ACCESS_KEY_ID=$(echo "${secret_json}" | jq -r '.AccessKeyId // empty' 2>/dev/null)
+    export AWS_SECRET_ACCESS_KEY=$(echo "${secret_json}" | jq -r '.SecretAccessKey // empty' 2>/dev/null)
+    export AWS_SESSION_TOKEN=$(echo "${secret_json}" | jq -r '.SessionToken // empty' 2>/dev/null)
+    if [ -z "${AWS_ACCESS_KEY_ID}" ]; then
+        echo "[ $(date) ] Warning: SM secret parsed but AccessKeyId not found — using instance role"
+        unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+    else
+        echo "[ $(date) ] SM credentials loaded"
+    fi
 else
-        export AWS_ACCESS_KEY_ID=$(echo "${creds_tmp}" | cut -d ":" -f1)
-        export AWS_SECRET_ACCESS_KEY=$(echo "${creds_tmp}" | cut -d ":" -f2-)
+    echo "[ $(date) ] jq unavailable — using instance role"
 fi
 
 NOGO="TRUE"
 REASON="NO_REASON"
-wall_message="""
+
+# Policy-specific wall message strings
+case "$POLICY" in
+    SPOT|SEVERE)
+        _idle_str="15 minutes"
+        _pause_str="30 minutes"
+        ;;
+    STANDARD)
+        _idle_str="1 hour"
+        _pause_str="2 hours"
+        ;;
+    *)
+        _idle_str="2 hours"
+        _pause_str="2 hours"
+        ;;
+esac
+wall_message="
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-This instance:${INSTANCE_ID} seems to be have been idle for the last 
-2 hours, will shut it down in 3 minutes from now. If you have been 
-unfortunate to just logged in into it, please wait couple of minutes and 
-start it again from AWS console or script or type:
+This instance:${INSTANCE_ID} (${POLICY}) seems to have been idle for the last
+${_idle_str}, will shut it down in 3 minutes from now. If you just logged in,
+please wait a couple of minutes and restart it from the AWS console, or type:
 
-sudo bash /root/gpumon/kill_halt.sh
+    sudo bash /root/gpumon/kill_halt.sh
 
-to stop the shutdown now. The shutdown pause in this case will last 2 hours
-after which the shutdown sequence will resume.
-+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-"""
-#lets check if we have TMP file
-filename=$(ls -lit /tmp/${FILE}* | head -1 | rev | cut -d " " -f1 | rev)
-if [ "${filename}" == "" ]; then
+to stop the shutdown now. The shutdown pause will last ${_pause_str}.
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
+
+# ── Collect log lines within the idle window ──────────────────────────────────
+# Log files rotate hourly and are named <PREFIX>YYYY-MM-DDTHH.
+# Build the list of candidate files by stepping through each hour in the window,
+# then filter lines by the embedded ISO timestamp using awk string comparison
+# (ISO format is lexicographically ordered so >= works without date arithmetic).
+now=$(date +%s)
+cutoff=$((now - WINDOW_SECONDS))
+cutoff_str=$(date -d "@${cutoff}" +'%Y-%m-%d %H:%M:%S')
+
+candidate_files=""
+t=$cutoff
+while [ "$t" -le "$((now + 3600))" ]; do
+    f="/tmp/${FILE}$(date -d @${t} +'%Y-%m-%dT%H')"
+    [ -f "$f" ] && candidate_files="${candidate_files} ${f}"
+    t=$((t + 3600))
+done
+
+if [ -z "${candidate_files}" ]; then
     NOGO="TRUE"
-    REASON="LOG_NOT_FOUND:${filename}"
-  else
-    NOGO="FALSE"
-    if [ "$(cat ${filename} | wc -l)" -lt "${STEP}" ]; then
-       NOGO="TRUE"
-       REASON="LOG_EXISTS_BUT_NOT_ENOUGH_DATA_IN_IT_SO_FAR:($(cat ${filename} | wc -l))_LINES"
-    fi
-fi
-#Now lets check if we have correct output
-if [ "${NOGO}" == "FALSE" ]; then 
-    check=$(tail -${STEP} ${filename} | cut -d ":" -f$SEP | sort | uniq -c | grep "CPU_Util")
-    if [ "${check}" == "" ]; then
-       NOGO="TRUE"
-       REASON="LOG_FILE_EXISTS_BUT_NO_VALID_DATA:${check}"
+    REASON="NO_LOG_FILES_FOUND"
+else
+    # awk substr(line,3,19) extracts "YYYY-MM-DD HH:MM:SS" from "[ YYYY-MM-DD HH:MM:SS..."
+    # shellcheck disable=SC2086
+    window_lines=$(cat ${candidate_files} 2>/dev/null | awk -v cutoff="${cutoff_str}" '{
+        ts = substr($0, 3, 19)
+        if (ts >= cutoff) print
+    }')
+
+    line_count=$(echo "${window_lines}" | grep -c .)
+
+    # Require 90% of expected samples so the full window is covered.
+    # At 10 s/sample, 90% of WINDOW_SECONDS = WINDOW_SECONDS * 9 / 100.
+    # Multi-GPU instances write DTYPE lines per tick so multiply accordingly.
+    # This prevents a 1-h-idle / 1-h-active pattern from passing the 2-h check.
+    if [ "${DTYPE}" -gt 0 ]; then
+        min_lines=$(( WINDOW_SECONDS * 9 / 100 * DTYPE ))
     else
-    #we got data, now lets analyse it
-      result=$(tail -${STEP} ${filename} | cut -d ":" -f$SEP | sort | uniq -c | grep "0,CPU_Util_Tripped")
-      if [ "${result}" == "" ]; then
-          #looks like there is data but only indication that Alarm was on for last two hours, lets make sure
-          positive=$(tail -${STEP} ${filename} | cut -d ":" -f$SEP | sort | uniq -c | grep "1,CPU_Util_Tripped")
-          if [ "${positive}" == "" ]; then
-              NOGO="TRUE"
-              REASON="ALARM_WASNT_ON_DURING_LAST_2_HOURS,INCONCLUSIVE,DEBUG:${positive} result:${result}"
-              #this shouldnt happen, if we get this message in logs something is very wrong
-          else
-              NOGO="FALSE"
-              REASON="WE_GOT_PILOT_ONLY_FOR_2_HOURS_ITS_A_GO:${positive} result:${result}"
-              #this means there was good amount of data and not a single line of Alarm=0 in it, we should turn the instance off
-          fi
-      else
+        min_lines=$(( WINDOW_SECONDS * 9 / 100 ))
+    fi
+    echo "[ $(date) ] Lines in window: ${line_count}  min required: ${min_lines}"
+
+    if [ "${line_count}" -lt "${min_lines}" ]; then
         NOGO="TRUE"
-        REASON="DATA_IS_OK_BUT_GOT_ACTIVITY_SPIKE:${check}"
-        #This is normal - at least a single Alarm=0 in last two hours = not turning instance off
-      fi
+        REASON="INSUFFICIENT_DATA:${line_count}_lines_in_${WINDOW_SECONDS}s_window_(need_${min_lines})"
+    else
+        # ── Analyse window lines ───────────────────────────────────────────────
+        # Match Alarm_Pilot_value by name rather than by colon-delimited field
+        # position — positional cut breaks when tag values (Team, Employee, etc.)
+        # contain colons, which shifts every subsequent field index.
+        valid_count=$(echo "${window_lines}" | grep -cE 'Alarm_Pilot_value:[01],' || true)
+        if [ "${valid_count}" -eq 0 ]; then
+            NOGO="TRUE"
+            REASON="LOG_EXISTS_BUT_NO_VALID_DATA"
+        else
+            pilot_off=$(echo "${window_lines}" | grep -cE 'Alarm_Pilot_value:0,' || true)
+            pilot_on=$(echo "${window_lines}"  | grep -cE 'Alarm_Pilot_value:1,' || true)
+            if [ "${pilot_off}" -gt 0 ]; then
+                NOGO="TRUE"
+                REASON="ACTIVITY_SPIKE_IN_WINDOW:${pilot_off}_lines_pilot_off"
+            elif [ "${pilot_on}" -gt 0 ]; then
+                NOGO="FALSE"
+                REASON="PILOT_ON_FOR_FULL_${WINDOW_SECONDS}s_WINDOW:${pilot_on}_lines"
+            else
+                NOGO="TRUE"
+                REASON="ALARM_WASNT_ON_DURING_WINDOW,INCONCLUSIVE"
+            fi
+        fi
     fi
 fi
 
-#main if
+# ── Shutdown decision ─────────────────────────────────────────────────────────
 if [ "${NOGO}" == "TRUE" ]; then
-   echo "[ $(date) ] WE ARE A NO-GO, BECAUSE:${REASON} TILL LATER, TA TA"
-   #res=$(sudo aws ec2 describe-instances --instance-ids "${INSTANCE_ID}" --region $AWSREGION)
-   #echo "[ $(date) ] debug: got result for aws describe-instances: ${res}"
+    echo "[ $(date) ] NO-GO: ${REASON}"
 else
-   echo "[ $(date) ] LOOKS LIKE WE ARE A GO - WILL SHUT THE INSTANCE DOWN, REASON:${REASON}" | tee -a /root/gpumon_persistent.log
-   wall "[ $(date) ] ${wall_message}"
-   sleep 180
-   wall "[ $(date) ] Well, 3 minutes have passed, shutdown is now...Bye Bye"
-   if [ "${POLICY}" == "SPOT" ]; then
-      res=$(sudo aws ec2 terminate-instances --instance-ids "${INSTANCE_ID}" --region $AWSREGION 2>&1) #in SPOTs we terminate instead of shutdown
-   else
-      res=$(sudo aws ec2 stop-instances --instance-ids "${INSTANCE_ID}" --region $AWSREGION 2>&1)
-   fi
-   echo "[ $(date) ] debug: got result for aws stop-instances: ${res}"
+    echo "[ $(date) ] GO — shutting down. Reason: ${REASON}" | tee -a /root/gpumon_persistent.log
+
+    # Dry-run before broadcasting — prevents wall-message spam when creds lack permission.
+    # DryRunOperation = authorized; UnauthorizedOperation = not authorized.
+    if [ "${POLICY}" == "SPOT" ]; then
+        _dryrun=$(aws ec2 terminate-instances --instance-ids "${INSTANCE_ID}" --region "${AWSREGION}" --dry-run 2>&1)
+    else
+        _dryrun=$(aws ec2 stop-instances --instance-ids "${INSTANCE_ID}" --region "${AWSREGION}" --dry-run 2>&1)
+    fi
+    if echo "${_dryrun}" | grep -qi "UnauthorizedOperation"; then
+        echo "[ $(date) ] AWS permission check failed — aborting broadcast: ${_dryrun}" | tee -a /root/gpumon_persistent.log
+        exit 1
+    fi
+
+    wall "[ $(date) ] ${wall_message}"
+    sleep 180
+    wall "[ $(date) ] 3 minutes passed — shutting down now. Bye!"
+    if [ "${POLICY}" == "SPOT" ]; then
+        res=$(aws ec2 terminate-instances --instance-ids "${INSTANCE_ID}" --region "${AWSREGION}" 2>&1)
+    else
+        res=$(aws ec2 stop-instances --instance-ids "${INSTANCE_ID}" --region "${AWSREGION}" 2>&1)
+    fi
+    if echo "${res}" | grep -qi "error\|Exception"; then
+        echo "[ $(date) ] AWS shutdown call failed: ${res}" | tee -a /root/gpumon_persistent.log
+        exit 1
+    fi
+    echo "[ $(date) ] AWS result: ${res}"
 fi
