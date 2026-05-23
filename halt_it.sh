@@ -209,14 +209,18 @@ else
 
     line_count=$(echo "${window_lines}" | grep -c .)
 
-    # Require 90% of expected samples so the full window is covered.
-    # At 10 s/sample, 90% of WINDOW_SECONDS = WINDOW_SECONDS * 9 / 100.
+    # Coverage check: require enough samples that the full window is represented.
+    # gpumon.SLEEP_INTERVAL = 10s nominal, but each loop adds ~1-2s of CloudWatch
+    # API latency (put_metric_data + get_metric_statistics x2), giving an actual
+    # cadence of ~11-12 s/sample. A strict 90% bound against the nominal 10s rate
+    # is unreachable on multi-GPU instances — the maximum physically possible
+    # line count is below the threshold. 70% of nominal leaves a safety margin
+    # while still rejecting the 1-h-idle / 1-h-active pattern in the 2-h window.
     # Multi-GPU instances write DTYPE lines per tick so multiply accordingly.
-    # This prevents a 1-h-idle / 1-h-active pattern from passing the 2-h check.
     if [ "${DTYPE}" -gt 0 ]; then
-        min_lines=$(( WINDOW_SECONDS * 9 / 100 * DTYPE ))
+        min_lines=$(( WINDOW_SECONDS * 7 / 100 * DTYPE ))
     else
-        min_lines=$(( WINDOW_SECONDS * 9 / 100 ))
+        min_lines=$(( WINDOW_SECONDS * 7 / 100 ))
     fi
     echo "[ $(date) ] Lines in window: ${line_count}  min required: ${min_lines}"
 
