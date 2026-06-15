@@ -86,6 +86,20 @@ pkill -f "python3 /root/gpumon/gpumon.py" 2>/dev/null || true
 pkill -f "python3 /root/gpumon/cpumon.py" 2>/dev/null || true
 pkill -f "python3 /root/gpumon/hostmon.py" 2>/dev/null || true
 
+# Ensure .env exists so docker compose can satisfy env_file: .env.
+# Idempotent — skipped when a .env is already present so manual edits survive.
+# Needed at boot because the AMI's source repo is gitignore-stripped (.env is
+# never tracked), so a fresh clone or new SPOT launch arrives without one.
+if [ ! -f "\$REPO_DIR/.env" ]; then
+    echo "[\$(date)] gpumon-boot: .env missing — writing defaults"
+    cat > "\$REPO_DIR/.env" <<'ENVEOF'
+GPUMON_SLACK_SECRET_ID=IT/SLACK_BOT_TOKEN
+GPUMON_SLACK_SECRET_REGION=eu-west-1
+GPUMON_SECRET_ID=AB/InstanceRole
+GPUMON_SECRET_REGION=eu-west-1
+ENVEOF
+fi
+
 if command -v nvidia-smi &>/dev/null \\
         && nvidia-smi --list-gpus >/dev/null 2>&1 \\
         && [ "\$(nvidia-smi --list-gpus | wc -l)" -gt 0 ]; then

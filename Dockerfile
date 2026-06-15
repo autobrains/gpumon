@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.2.0-base-ubuntu22.04
+FROM public.ecr.aws/nvidia/cuda:12.2.0-base-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
