@@ -46,8 +46,11 @@ if [ "\$BEFORE" = "\$AFTER" ]; then
 fi
 
 echo "[\$(date)] gpumon-update: \$BEFORE -> \$AFTER — rebuilding container"
-cp "\${REPO_DIR}/halt_it.sh" "${HALT_HOST}"
-chmod +x "${HALT_HOST}"
+
+# Re-run autoinstall.sh so service-file regeneration (gpumon-boot.sh, gpumon-update.sh,
+# halt_it.sh, systemd units) picks up any changes in the new commit.  The sentinel at
+# /var/log/gpumon.finished short-circuits the heavy apt/docker install part.
+bash "\${REPO_DIR}/autoinstall.sh"
 
 cd "\$REPO_DIR"
 if command -v nvidia-smi &>/dev/null \\
