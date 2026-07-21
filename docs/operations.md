@@ -17,7 +17,7 @@ All fleet management is done by setting the `GPUMON` EC2 tag. The Lambda fleet m
 
 1. Ensure the instance has the `EC2IAMRole` instance profile attached (the Lambda will attach it if missing, but the instance must be running).
 2. Set `GPUMON = install` on the instance.
-3. `GPUMON_BRANCH` defaults to `feature/dockerize` for installs. Set it explicitly only if you need a different branch.
+3. `GPUMON_BRANCH` defaults to `main` for installs. Set it explicitly only if you need a different branch.
 4. Lambda installs Docker, builds the container, starts it, and sets the tag to `ACTIVE`.
 
 ### Remove gpumon from an instance
@@ -57,7 +57,7 @@ Legacy instances (running gpumon directly via systemd, not Docker) continue work
 **To migrate a single instance:**
 
 1. Set `GPUMON = MIGRATE` on the instance.
-2. Optionally set `GPUMON_BRANCH = feature/dockerize` (this is the default for MIGRATE).
+2. Optionally set `GPUMON_BRANCH = main` (this is the default for MIGRATE).
 3. Lambda will:
    - Stop all legacy systemd units (`gpumon`, `cpumon`, `gpumon-monitor`).
    - Kill any bare `python gpumon.py / cpumon.py / hostmon.py` processes.
@@ -72,20 +72,18 @@ Legacy instances (running gpumon directly via systemd, not Docker) continue work
 
 ---
 
-## Merging `feature/dockerize` into `main`
+## Promoting `feature/dockerize` to `main`
 
-When the Docker branch is ready for promotion:
+`feature/dockerize` was merged into `main` on 2026-07-21 and `DOCKER_BRANCH` is
+now `"main"` (steps 1–2 below are done). Remaining cleanup to retire the old branch:
 
-1. Merge the PR on GitHub.
-2. In `lambda_manager.py`, update:
-   ```python
-   DOCKER_BRANCH = "main"   # was "feature/dockerize"
-   ```
+1. Merge the PR on GitHub. *(done)*
+2. Set `DOCKER_BRANCH = "main"` in `lambda_manager.py`. *(done)*
 3. Redeploy the Lambda.
 4. Retag existing Docker instances so their local repos switch to tracking `main`:
    - Set `GPUMON_BRANCH = main` and `GPUMON = MIGRATE` on each Docker instance.
    - Lambda re-clones from `main` and restarts the container (~5 min downtime per instance).
-5. Delete the `feature/dockerize` branch.
+5. Delete the `feature/dockerize` branch once every box tracks `origin/main`.
 
 From that point, all installs and migrations use `main`.
 
