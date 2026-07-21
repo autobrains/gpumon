@@ -35,13 +35,44 @@ cat > "${UPDATE_SCRIPT}" << UPDATESCRIPT
 set -euo pipefail
 REPO_DIR="${REPO_DIR}"
 
+# Bring the gpumon container to the desired state (GPU vs CPU compose) and, on
+# GPU hosts, verify NVML. Idempotent: a no-op when the current image is already
+# running; builds/recreates when the container or image is missing.
+ensure_container_up() {
+    local build="\${1:-}"   # pass "--build" to force an image rebuild
+    cd "\$REPO_DIR"
+    if command -v nvidia-smi &>/dev/null \\
+            && nvidia-smi --list-gpus >/dev/null 2>&1 \\
+            && [ "\$(nvidia-smi --list-gpus | wc -l)" -gt 0 ]; then
+        docker compose up -d \$build
+        sleep 8
+        _nvml_out=\$(docker exec gpumon-gpumon-1 nvidia-smi --list-gpus 2>&1 || true)
+        if echo "\$_nvml_out" | grep -qi "failed\|error\|unknown"; then
+            echo "[\$(date)] gpumon-update: NVML not ready (\${_nvml_out}) — recreating container..."
+            docker compose down && docker compose up -d
+            sleep 5
+        fi
+    else
+        docker compose -f docker-compose.cpu.yml up -d \$build
+    fi
+}
+
 BEFORE=\$(git -C "\$REPO_DIR" rev-parse HEAD)
 git -C "\$REPO_DIR" fetch origin --quiet
 git -C "\$REPO_DIR" reset --hard @{upstream} --quiet
 AFTER=\$(git -C "\$REPO_DIR" rev-parse HEAD)
 
 if [ "\$BEFORE" = "\$AFTER" ]; then
-    echo "[\$(date)] gpumon-update: no changes"
+    # No repo change — but self-heal if the container was removed or stopped (e.g.
+    # a co-tenant "docker system prune" on a shared box nuked it). Previously this
+    # path just exited, so a pruned container stayed down until the next reboot.
+    if [ "\$(docker inspect -f '{{.State.Running}}' gpumon-gpumon-1 2>/dev/null || echo false)" = "true" ]; then
+        echo "[\$(date)] gpumon-update: no changes, container running — nothing to do"
+        exit 0
+    fi
+    echo "[\$(date)] gpumon-update: no repo changes but container is down — reconciling"
+    ensure_container_up
+    echo "[\$(date)] gpumon-update: reconcile done"
     exit 0
 fi
 
@@ -52,21 +83,7 @@ echo "[\$(date)] gpumon-update: \$BEFORE -> \$AFTER — rebuilding container"
 # /var/log/gpumon.finished short-circuits the heavy apt/docker install part.
 bash "\${REPO_DIR}/autoinstall.sh"
 
-cd "\$REPO_DIR"
-if command -v nvidia-smi &>/dev/null \\
-        && nvidia-smi --list-gpus >/dev/null 2>&1 \\
-        && [ "\$(nvidia-smi --list-gpus | wc -l)" -gt 0 ]; then
-    docker compose up -d --build
-    sleep 8
-    _nvml_out=\$(docker exec gpumon-gpumon-1 nvidia-smi --list-gpus 2>&1 || true)
-    if echo "\$_nvml_out" | grep -qi "failed\|error\|unknown"; then
-        echo "[\$(date)] gpumon-update: NVML not ready (\${_nvml_out}) — recreating container..."
-        docker compose down && docker compose up -d
-        sleep 5
-    fi
-else
-    docker compose -f docker-compose.cpu.yml up -d --build
-fi
+ensure_container_up --build
 echo "[\$(date)] gpumon-update: done"
 UPDATESCRIPT
 chmod +x "${UPDATE_SCRIPT}"
