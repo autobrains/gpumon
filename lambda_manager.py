@@ -12,8 +12,8 @@ TAG_KEY        = "GPUMON"
 BRANCH_TAG_KEY = "GPUMON_BRANCH"       # optional per-instance branch override
 
 # All new installs and migrations use DOCKER_BRANCH.
-# Update this constant to "main" once feature/dockerize is merged.
-DOCKER_BRANCH  = "feature/dockerize"
+# feature/dockerize was promoted to main on 2026-07-21; main is now canonical.
+DOCKER_BRANCH  = "main"
 
 _VALID_BRANCH_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9/_.-]{0,99}$')
 

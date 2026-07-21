@@ -62,7 +62,7 @@ sudo bash /root/gpumon/autoinstall.sh
 | Tag | Required | Values / Default | Purpose |
 |-----|----------|-----------------|---------|
 | `GPUMON` | **Yes** | see state machine below | Drives Lambda fleet actions |
-| `GPUMON_BRANCH` | No | default: `feature/dockerize` | Branch to clone during install or migrate; update `DOCKER_BRANCH` constant after merge |
+| `GPUMON_BRANCH` | No | default: `main` | Branch to clone during install or migrate |
 | `GPUMON_POLICY` | No | `STANDARD` *(default)* | Idle-shutdown sensitivity |
 | `Team` | No | e.g. `ML_TEAM` | CloudWatch dimension |
 | `Employee` | No | Name or `user@email.com` | Slack DM recipient for personal alerts |
@@ -106,7 +106,7 @@ sudo bash /root/gpumon/autoinstall.sh
 
 | Tag value | Lambda action |
 |-----------|--------------|
-| `install` | Clone `GPUMON_BRANCH` (default `feature/dockerize`), run `autoinstall.sh` |
+| `install` | Clone `GPUMON_BRANCH` (default `main`), run `autoinstall.sh` |
 | `PENDING_SSM` | Retry install (SSM agent was absent on first attempt) |
 | `ACTIVE` | Health-check; set `FAILED` if not running |
 | `INACTIVE` | Health-check when instance comes back up |
@@ -273,8 +273,8 @@ Set `GPUMON_BRANCH` on an instance to override which git branch is cloned. Defau
 
 | Action | Default branch |
 |--------|---------------|
-| `install` | `feature/dockerize` (update `DOCKER_BRANCH` constant after merge) |
-| `MIGRATE` | `feature/dockerize` (update `DOCKER_BRANCH` constant after merge) |
+| `install` | `main` |
+| `MIGRATE` | `main` |
 
 ---
 
@@ -338,16 +338,16 @@ docker logs gpumon-gpumon-1 -f
 sudo rm /var/log/gpumon.finished && sudo bash /root/gpumon/autoinstall.sh
 ```
 
-### Branch strategy during Docker rollout
+### Branch strategy
 
-- `main` — legacy (non-Docker) gpumon; existing instances track this branch.
-- `feature/dockerize` — Docker deployment; new installs and migrations use this branch.
+- `main` — canonical Docker deployment branch; all new installs and migrations use it (`DOCKER_BRANCH = "main"`).
+- `feature/dockerize` — the Docker rollout branch, merged into `main` on 2026-07-21. Retained only until the running fleet is re-pointed to `main`, then deleted.
 
-When `feature/dockerize` is merged to `main`:
+Remaining rollout cleanup:
 
-1. Update `DOCKER_BRANCH = "main"` in `lambda_manager.py` and redeploy Lambda.
+1. Redeploy the Lambda so the updated `DOCKER_BRANCH = "main"` takes effect for new installs.
 2. Retag existing Docker instances (`GPUMON_BRANCH=main`, `GPUMON=MIGRATE`) so they re-clone from `main`.
-3. Delete the `feature/dockerize` branch.
+3. Delete the `feature/dockerize` branch once every box tracks `origin/main`.
 
 Auto-updates (`gpumon-update.sh`, fired by the systemd timer) pull from whichever branch the instance was cloned at. No special logic is required — git tracks the upstream automatically.
 
