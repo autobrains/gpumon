@@ -1,513 +1,308 @@
 # Copyright 2017 Amazon.com, Inc. or its affiliates. All Rights Reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License").
-# You may not use this file except in compliance with the License.
-# A copy of the License is located at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#  
-#  or in the "license" file accompanying this file. This file is distributed 
-#  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either 
-#  express or implied. See the License for the specific language governing 
-#  permissions and limitations under the License.
-###########
-# Some changes to script have been made by Paul Seifer to adapt to python3.9, such as conversion of values to utf-8 strings.
+# Licensed under the Apache License, Version 2.0
+# Adapted for Python 3 and extended by Paul Seifer, Autobrains LTD
 
-try:
-    from urllib.request import Request, urlopen
-except ImportError:
-    from urllib2 import Request, urlopen
-import psutil
-import boto3
-from pynvml import *
-from datetime import datetime, timedelta
+from __future__ import annotations
+
+import os
+from datetime import datetime
 from time import sleep
-import time
-import requests
-import subprocess
+
+import boto3
+import psutil
+from pynvml import (
+    NVMLError,
+    nvmlDeviceGetCount,
+    nvmlDeviceGetHandleByIndex,
+    nvmlDeviceGetPowerUsage,
+    nvmlDeviceGetTemperature,
+    nvmlDeviceGetUtilizationRates,
+    nvmlInit,
+    nvmlShutdown,
+    NVML_TEMPERATURE_GPU,
+)
+
+from mon_utils import (
+    build_slack_dm_client,
+    calculate_average_core_utilization,
+    cleanup_old_logs,
+    create_tag,
+    fetch_instance_metadata,
+    get_instance_tags,
+    get_network_stats,
+    get_per_core_cpu_utilization,
+    get_policy_config,
+    seconds_elapsed,
+    try_record_alert,
+)
+
+NAMESPACE = "GPU-metrics-with-team-tag"
+TMP_FILE_PREFIX = "/tmp/GPU_TEMP_"
+SLEEP_INTERVAL = 10
+STORE_RESO = 60
+CACHE_DURATION = 300  # seconds of CPU history to keep
+POLICY_REFRESH_LOOPS = 60   # re-read GPUMON_POLICY tag every ~10 min
 
 
-# Constants
-CACHE_DURATION = 300  # 5 minutes in seconds
-THRESHOLD_PERCENTAGE = 10  # Threshold for average core utilization
-
-# Variables
-core_utilization_cache = [[] for _ in range(psutil.cpu_count())]  # List to store utilization data for each core
-cpu_util_tripped = 0
-
-#Functions
-
-def check_root_crontab(search_string):
+def _get_power_draw(handle) -> tuple[str, bool]:
     try:
-        # Run the command to list root's crontab
-        result = subprocess.run(['sudo', 'crontab', '-l'], capture_output=True, text=True, check=True)
-        # Check if the search string is in the output
-        if search_string in result.stdout:
-            return True
-        else:
-            return False
-    except subprocess.CalledProcessError as e:
-        print(f"An error occurred: {e}")
-        return False
-    except PermissionError:
-        print("Permission denied. Make sure you have sudo privileges.")
-        return False
-
-def add_to_root_crontab(new_cron_job):
-    try:
-        # Get the current crontab content
-        current_crontab = subprocess.run(['sudo', 'crontab', '-l'], capture_output=True, text=True, check=True)
-        # Append the new job to the existing content
-        new_crontab = current_crontab.stdout + new_cron_job + "\n"
-        # Write the new crontab content
-        process = subprocess.Popen(['sudo', 'crontab', '-'], stdin=subprocess.PIPE, text=True)
-        process.communicate(input=new_crontab)
-        if process.returncode == 0:
-            print("New cron job added successfully.")
-            return True
-        else:
-            print("Failed to add new cron job.")
-            return False
-    except subprocess.CalledProcessError as e:
-        print(f"An error occurred: {e}")
-        return False
-    except PermissionError:
-        print("Permission denied. Make sure you have sudo privileges.")
-        return False
-
-def seconds_elapsed():
-    return time.time() - psutil.boot_time()
-
-def get_per_core_cpu_utilization():
-    return psutil.cpu_percent(interval=1, percpu=True)
-
-def calculate_average_core_utilization():
-    return [sum(core_data) / len(core_data) if core_data else 0 for core_data in core_utilization_cache]
-
-### CHOOSE REGION ####
-EC2_REGION = 'eu-west-1'
-
-###CHOOSE NAMESPACE PARMETERS HERE###
-my_NameSpace = 'GPU-metrics-with-team-tag' 
-
-### CHOOSE PUSH INTERVAL ####
-sleep_interval = 10
-
-### CHOOSE STORAGE RESOLUTION (BETWEEN 1-60) ####
-store_reso = 60
-
-#Instance information
-BASE_URL = 'http://169.254.169.254/latest/meta-data/'
-req = Request('http://169.254.169.254/latest/api/token',None,{'X-aws-ec2-metadata-token-ttl-seconds' : '21600'},method='PUT')
-TOKEN = urlopen(req).read().decode("utf-8")
-req = Request(BASE_URL + 'instance-id', None,{'X-aws-ec2-metadata-token' : TOKEN },method='GET')
-INSTANCE_ID = urlopen(req).read().decode("utf-8")
-req = Request(BASE_URL + 'ami-id', None,{'X-aws-ec2-metadata-token' : TOKEN },method='GET')
-IMAGE_ID = urlopen(req).read().decode("utf-8")
-req = Request(BASE_URL + 'instance-type', None,{'X-aws-ec2-metadata-token' : TOKEN },method='GET')
-INSTANCE_TYPE = urlopen(req).read().decode("utf-8")
-req = Request(BASE_URL + 'placement/availability-zone', None,{'X-aws-ec2-metadata-token' : TOKEN },method='GET')
-INSTANCE_AZ = urlopen(req).read().decode("utf-8")
-req = Request(BASE_URL + 'hostname', None,{'X-aws-ec2-metadata-token' : TOKEN },method='GET')
-HOSTNAME = urlopen(req).read().decode("utf-8")
-
-EC2_REGION = INSTANCE_AZ[:-1]
-
-TIMESTAMP = datetime.now().strftime('%Y-%m-%dT%H')
-TMP_FILE = '/tmp/GPU_TEMP_'
-TMP_FILE_SAVED = TMP_FILE + TIMESTAMP
-# Create EC2 client to get tags
-ec2 = boto3.client('ec2', region_name=EC2_REGION)
-# Create CloudWatch client
-cloudwatch = boto3.client('cloudwatch', region_name=EC2_REGION)
-
-def get_network_stats(instance_id,network):
-    # Set the end time to the current time
-    end = datetime.utcnow()
-    # Set the start time to 5 minutes ago
-    start = end - timedelta(minutes=5)
-    # Format the time strings
-    start_str = start.strftime("%Y-%m-%dT%H:%M:%SZ")
-    end_str = end.strftime("%Y-%m-%dT%H:%M:%SZ")
-    #print("From:",start_str,"Till:",end_str,"instance:",instance_id)
-    data_in = cloudwatch.get_metric_statistics(
-        Period=60,
-        StartTime=start_str,
-        EndTime=end_str,
-        MetricName="NetworkPacketsIn",
-        Namespace="AWS/EC2",
-        Statistics=["Maximum"],
-        Unit="Count",
-        Dimensions=[{'Name': 'InstanceId', 'Value': str(instance_id)}]
-    )
-    #print("data_in:",data_in)
-    data_out = cloudwatch.get_metric_statistics(
-        Period=60,
-        StartTime=start_str,
-        EndTime=end_str,
-        MetricName="NetworkPacketsOut",
-        Namespace="AWS/EC2",
-        Statistics=["Maximum"],
-        Unit="Count",
-        Dimensions=[{'Name': 'InstanceId', 'Value': str(instance_id)}]
-    )
-    datapoints_in = data_in.get("Datapoints", [])
-    #print("datapoints_in:",datapoints_in)
-    datapoints_out = data_out.get("Datapoints",[])
-    first_datapoint_in = 1 #we dont want to switch off instance if we werent able to bring metrics in
-    first_datapoint_out = 1
-    if datapoints_in:
-        # Access the first data point (assuming there is at least one)
-        first_datapoint_in = datapoints_in[0]["Maximum"]
-        #print(f"packetsin:{round(first_datapoint_in)}")
-    else:
-        first_datapoint_in = network / 2
-        print("No data points found.")
-    if datapoints_out:
-        # Access the first data point (assuming there is at least one)
-        first_datapoint_out = datapoints_out[0]["Maximum"]
-        #print(f"packetsout:{round(first_datapoint_out)}")
-    else:
-        first_datapoint_in = network / 2
-        print("No data points found.")
-    network_sum = round(first_datapoint_in) + round(first_datapoint_out)
-    return network_sum
-
-# Flag to push to CloudWatch
-PUSH_TO_CW = True
-def get_instance_tags(instance_id):
-    try:
-        response = ec2.describe_tags(
-            Filters=[
-                {
-                    'Name': 'resource-id',
-                    'Values': [instance_id]
-                }
-            ]
-        )
-        tags = {tag['Key']: tag['Value'] for tag in response['Tags']}
-        return tags
-    except ClientError:
-        print(f"Couldn't get tags for instance {instance_id}")
-        raise
-def send_slack(webhook_url,message):
-    message=f"{message}"   
-    payload = {
-        "text": message
-    }
-
-    response = requests.post(webhook_url, json=payload)
-
-    if response.status_code == 200:
-        print("Message sent to Slack successfully.")
-    else:
-        print(f"Failed to send message to Slack. Status code: {response.status_code}")
-
-def create_tag(instance_id, tag_name, default_value):
-    """
-    Ensures that a particular tag is present in the instance tags.
-    If the tag is not present, it adds the tag with the specified default value.
-
-    :param instance_id: The ID of the instance.
-    :param tag_name: The tag name to check for.
-    :param default_value: The default value to set if the tag is not found.
-    :return: None
-    """
-    ec2.create_tags(
-        Resources=[instance_id],
-        Tags=[{'Key': tag_name, 'Value': default_value}]
-        )
-    print(f"Tag '{tag_name}' with value '{default_value}' added to instance {instance_id}.")
-
-def getPowerDraw(handle):
-    try:
-        powDraw = nvmlDeviceGetPowerUsage(handle) / 1000.0
-        powDrawStr = '%.2f' % powDraw
+        return "%.2f" % (nvmlDeviceGetPowerUsage(handle) / 1000.0), True
     except NVMLError as err:
-        powDrawStr = handleError(err)
-        PUSH_TO_CW = False
-    return powDrawStr
+        return str(err), False
 
-def getTemp(handle):
+
+def _get_temp(handle) -> tuple[str, bool]:
     try:
-        temp = str(nvmlDeviceGetTemperature(handle, NVML_TEMPERATURE_GPU))
+        return str(nvmlDeviceGetTemperature(handle, NVML_TEMPERATURE_GPU)), True
     except NVMLError as err:
-        temp = handleError(err) 
-        PUSH_TO_CW = False
-    return temp
+        return str(err), False
 
-def getUtilization(handle):
+
+def _get_utilization(handle) -> tuple[object | None, str, str, bool]:
     try:
         util = nvmlDeviceGetUtilizationRates(handle)
-        gpu_util = str(util.gpu)
-        mem_util = str(util.memory)
+        return util, str(util.gpu), str(util.memory), True
     except NVMLError as err:
-        error = handleError(err)
-        gpu_util = error
-        mem_util = error
-        PUSH_TO_CW = False
-    return util, gpu_util, mem_util
+        s = str(err)
+        return None, s, s, False
 
-def logResults(team, emp_name, i, util, gpu_util, mem_util, powDrawStr, temp, average_gpu_util,alarm_pilot_light,cpu_util_tripped,seconds,current_time,per_core_utilization,network,network_tripped):
+
+def _log_results(
+    log_file: str,
+    cw_client,
+    instance_id: str,
+    image_id: str,
+    instance_type: str,
+    team: str,
+    emp_name: str,
+    gpu_index: int,
+    util,
+    gpu_util: str,
+    mem_util: str,
+    pow_draw: str,
+    temp: str,
+    average_gpu_util: float,
+    alarm_pilot_light: int,
+    cpu_util_tripped: bool,
+    seconds: int,
+    current_time: datetime,
+    per_core_utilization: list[float],
+    network: float,
+    network_tripped: int,
+    push_to_cw: bool,
+) -> None:
+    line = (
+        f"[ {current_time} ] "
+        f"tag:{team},"
+        f"Employee:{emp_name},"
+        f"GPU_ID:{gpu_index},"
+        f"GPU_Util:{gpu_util},"
+        f"MemUtil:{mem_util},"
+        f"powDrawStr:{pow_draw},"
+        f"Temp:{temp},"
+        f"AverageGPUUtil:{average_gpu_util},"
+        f"Alarm_Pilot_value:{alarm_pilot_light},"
+        f"CPU_Util_Tripped:{cpu_util_tripped},"
+        f"Seconds Elapsed since reboot:{seconds},"
+        f"Per-Core CPU Util:{per_core_utilization},"
+        f"NetworkStats:{network},"
+        f"Network_Tripped:{network_tripped}\n"
+    )
     try:
-        gpu_logs = open(TMP_FILE_SAVED, 'a+')
-        writeString = '[ ' + str(current_time) + ' ] ' + 'tag:' + team + ',' + 'Employee:' + emp_name + ',' + 'GPU_ID:' + str(i) + ',' + 'GPU_Util:' + gpu_util + ',' + 'MemUtil:' + mem_util + ',' + 'powDrawStr:' + powDrawStr + ',' + 'Temp:' + temp + ',' + 'AverageGPUUtil:' + str(average_gpu_util) + ',' + 'Alarm_Pilot_value:' + str(alarm_pilot_light) + ',' + 'CPU_Util_Tripped:' + str(cpu_util_tripped) + ',' + 'Seconds Elapsed since reboot:' + str(seconds) + ',' + 'Per-Core CPU Util:' + str(per_core_utilization) + ',' + 'NetworkStats:' + str(network) + ',' + 'Network_Tripped:' + str(network_tripped) + '\n'
-        #print(writeString)
-        #writeString = 'tag:' + team + ',' + 'Employee:' + emp_name + ',' + str(i) + ',' + gpu_util + ',' + mem_util + ',' + powDrawStr + ',' + temp + '\n'
-        gpu_logs.write(writeString)
-    except:
-        print("Error writing to file ", gpu_logs)
-    finally:
-        gpu_logs.close()
-    if (PUSH_TO_CW):
-        MY_DIMENSIONS=[
-                    {
-                        'Name': 'InstanceId',
-                        'Value': INSTANCE_ID
-                    },
-                    {
-                        'Name': 'ImageId',
-                        'Value': IMAGE_ID
-                    },
-                    {
-                        'Name': 'InstanceType',
-                        'Value': INSTANCE_TYPE
-                    },
-                    {
-                        'Name': 'GPUNumber',
-                        'Value': str(i)
-                    },
-                    {
-                        'Name': 'InstanceTag',
-                        'Value': str(team)
-                    },
-                    {
-                        'Name': 'EmployeeTag',
-                        'Value': str(emp_name)
-                    }
+        with open(log_file, "a") as fh:
+            fh.write(line)
+    except OSError as exc:
+        print(f"log write error: {exc}")
 
-                ]
-        cloudwatch.put_metric_data(
+    if not push_to_cw or util is None:
+        return
+
+    dims = [
+        {"Name": "InstanceId",    "Value": instance_id},
+        {"Name": "ImageId",       "Value": image_id},
+        {"Name": "InstanceType",  "Value": instance_type},
+        {"Name": "GPUNumber",     "Value": str(gpu_index)},
+        {"Name": "InstanceTag",   "Value": team},
+        {"Name": "EmployeeTag",   "Value": emp_name},
+    ]
+    try:
+        cw_client.put_metric_data(
+            Namespace=NAMESPACE,
             MetricData=[
-                {
-                    'MetricName': 'GPU Usage',
-                    'Dimensions': MY_DIMENSIONS,
-                    'Unit': 'Percent',
-                    'StorageResolution': store_reso,
-                    'Value': util.gpu
-                },
-                {
-                    'MetricName': 'Memory Usage',
-                    'Dimensions': MY_DIMENSIONS,
-                    'Unit': 'Percent',
-                    'StorageResolution': store_reso,
-                    'Value': util.memory
-                },
-                {
-                    'MetricName': 'Power Usage (Watts)',
-                    'Dimensions': MY_DIMENSIONS,
-                    'Unit': 'None',
-                    'StorageResolution': store_reso,
-                    'Value': float(powDrawStr)
-                },
-                {
-                    'MetricName': 'Temperature (C)',
-                    'Dimensions': MY_DIMENSIONS,
-                    'Unit': 'None',
-                    'StorageResolution': store_reso,
-                    'Value': int(temp)
-                },
-                {
-                    'MetricName': 'Alarm Pilot Light (1/0)',
-                    'Dimensions': MY_DIMENSIONS,
-                    'Unit': 'None',
-                    'StorageResolution': store_reso,
-                    'Value': float(alarm_pilot_light)
-                },
-                {
-                    'MetricName': 'Average GPU Utilization',
-                    'Dimensions': MY_DIMENSIONS,
-                    'Unit': 'Percent',
-                    'StorageResolution': store_reso,
-                    'Value': float(average_gpu_util)
-                },
-                {
-                    'MetricName': 'CPU Utilization Low Tripped',
-                    'Dimensions': MY_DIMENSIONS,
-                    'Unit': 'None',
-                    'StorageResolution': store_reso,
-                    'Value': float(cpu_util_tripped)
-                },
-                {
-                    'MetricName': 'Network Tripped',
-                    'Dimensions': MY_DIMENSIONS,
-                    'Unit': 'None',
-                    'StorageResolution': store_reso,
-                    'Value': float(network_tripped)
-                }
-
-
-        ],
-            Namespace=my_NameSpace
+                {"MetricName": "GPU Usage",                    "Dimensions": dims, "Unit": "Percent", "StorageResolution": STORE_RESO, "Value": util.gpu},
+                {"MetricName": "Memory Usage",                 "Dimensions": dims, "Unit": "Percent", "StorageResolution": STORE_RESO, "Value": util.memory},
+                {"MetricName": "Power Usage (Watts)",          "Dimensions": dims, "Unit": "None",    "StorageResolution": STORE_RESO, "Value": float(pow_draw)},
+                {"MetricName": "Temperature (C)",              "Dimensions": dims, "Unit": "None",    "StorageResolution": STORE_RESO, "Value": int(temp)},
+                {"MetricName": "Alarm Pilot Light (1/0)",      "Dimensions": dims, "Unit": "None",    "StorageResolution": STORE_RESO, "Value": float(alarm_pilot_light)},
+                {"MetricName": "Average GPU Utilization",      "Dimensions": dims, "Unit": "Percent", "StorageResolution": STORE_RESO, "Value": float(average_gpu_util)},
+                {"MetricName": "CPU Utilization Low Tripped",  "Dimensions": dims, "Unit": "None",    "StorageResolution": STORE_RESO, "Value": float(cpu_util_tripped)},
+                {"MetricName": "Network Tripped",              "Dimensions": dims, "Unit": "None",    "StorageResolution": STORE_RESO, "Value": float(network_tripped)},
+            ],
         )
-    
+    except Exception as exc:
+        print(f"CloudWatch put_metric_data error: {exc}")
 
-nvmlInit()
-deviceCount = nvmlDeviceGetCount()
-def main():
-    result = check_root_crontab("halt_it.sh")
-    if result:
-       print("halt_it.sh presence in crontab detected, continue")
-    else:
-       print("updating crontab with new halt_it.sh call")
-       new_job = "*/10 * * * * bash /root/gpumon/halt_it.sh | tee -a /tmp/halt_it_log.txt"
-       add_to_root_crontab(new_job)
 
-    global core_utilization_cache
+def main() -> None:
+    cleanup_old_logs(TMP_FILE_PREFIX, max_age_hours=48)
+
+    meta = fetch_instance_metadata()
+    region        = meta["region"]
+    instance_id   = meta["instance_id"]
+    image_id      = meta["image_id"]
+    instance_type = meta["instance_type"]
+    hostname      = meta["hostname"]
+
+    ec2 = boto3.client("ec2",        region_name=region)
+    cw  = boto3.client("cloudwatch", region_name=region)
+
+    nvmlInit()
+    device_count = nvmlDeviceGetCount()
+
+    tags = get_instance_tags(ec2, instance_id)
+    instance_name = tags.get("Name", "NO_NAME_TAG")
+    team          = tags.get("Team", "NO_TAG")
+    emp_name      = tags.get("Employee", "NO_TAG")
+    policy        = tags.get("GPUMON_POLICY")
+    if policy is None:
+        policy = "STANDARD"
+        create_tag(ec2, instance_id, "GPUMON_POLICY", policy)
+
+    # SPOT/SEVERE: no idle shutdown DM (disk/memory alerts handled by hostmon.py)
+    page_employee = (
+        policy not in ("SPOT", "SEVERE")
+        and tags.get("PAGE_EMPLOYEE", "True").lower() != "false"
+    )
+
+    cfg = get_policy_config(policy)
+    restart_backoff   = cfg["restart_backoff"]
+    cpu_threshold     = cfg["cpu_threshold"]
+    gpu_threshold     = cfg["gpu_threshold"]
+    network_threshold = cfg["network_threshold"]
+    shutdown_eta      = cfg["shutdown_eta"]
+
+    shutdown_cooldown_hours = float(os.getenv("SHUTDOWN_ALERT_COOLDOWN_HOURS", "4"))
+
+    # Slack DM client — None if secret not configured or unreachable
+    slack_secret_id     = os.getenv("GPUMON_SLACK_SECRET_ID", "IT/SLACK_BOT_TOKEN")
+    slack_secret_region = os.getenv("GPUMON_SLACK_SECRET_REGION", os.getenv("GPUMON_SECRET_REGION", "eu-west-1"))
+    dm_client = build_slack_dm_client(slack_secret_id, slack_secret_region) if page_employee else None
+
+    core_cache: list[list[float]] = [[] for _ in range(psutil.cpu_count())]
     alarm_pilot_light = 0
-    network_tripped = 0
-    network = 99
-    cpu_util_tripped = False
-    policy = 'STANDARD'
-    tags = get_instance_tags(INSTANCE_ID)
-    if 'Name' in tags:
-        instance_name = str(tags['Name'])
-    else:
-        instance_name = "NO_NAME_TAG"
-    if 'Team' in tags:
-        team = str(tags['Team'])
-    else:
-        team = "NO_TAG"
-    if 'Employee' in tags:
-        emp_name = str(tags['Employee'])
-    else:
-        emp_name = "NO_TAG"
-    if 'GPUMON_POLICY' in tags:
-        policy = str(tags['GPUMON_POLICY'])
-    else:
-        create_tag(INSTANCE_ID,'GPUMON_POLICY',policy)
-    
-    if policy == 'RELAXED':
-        print('POLICY TAG detected:',{policy})
-        RESTART_BACKOFF = 7200 # will wait 2 hours to even start the evaluation
-        THRESHOLD_PERCENTAGE = 5 #over 5 percent CPU utilization will stop the shutdown sequence
-        GPU_THRESHOLD = 10 # Over 10 percent GPU average utilization will stop the shutdown sequence
-        NETWORK_THRESHOLD = 10000 # Over 10K packets in/out combined will stop the shutdown sequence
-    elif policy == "SEVERE":
-        print('POLICY TAG detected:',{policy})
-        RESTART_BACKOFF = 0 # will not wait and will start evaluation immediately upon boot
-        THRESHOLD_PERCENTAGE = 20 #over 20% CPU utilization will stop the shutdown sequence
-        GPU_THRESHOLD = 2 
-        NETWORK_THRESHOLD = 15000 #over 15K packets in/out combined will stop the shutdown sequence
-    elif policy == "SPOT": #this is the most aggressive shutdown, 15 min of inactivity
-        print('POLICY TAG detected:',{policy})
-        RESTART_BACKOFF = 0 #0 seconds backoff - the alert pilot switches to 1 right away if idle
-        THRESHOLD_PERCENTAGE = 20 # under 20% is considered idle
-        GPU_THRESHOLD = 10 # Over 10 percent GPU average utilization will stop the shutdown sequence
-        NETWORK_THRESHOLD = 30000 # Over 30K packets in/out combined will stop the shutdown sequence
-    elif policy == "SUSPEND": #this should keep it running even if no activity is detected
-        print('POLICY TAG detected:',{policy})
-        RESTART_BACKOFF = 864000 #10 days backoff then if the box is really quiet it can die
-        THRESHOLD_PERCENTAGE = 10
-        GPU_THRESHOLD = 10
-        NETWORK_THRESHOLD = 15000
-    else:
-        print('POLICY TAG detected:',{policy})
-        RESTART_BACKOFF = 3600 #This is STANDARD policy tag - 1 hour backoff, 10% cPu threshold 10% GPU and 15K network
-        THRESHOLD_PERCENTAGE = 10
-        GPU_THRESHOLD = 10
-        NETWORK_THRESHOLD = 15000
+    network_tripped   = 0
+    network: float    = 99.0
 
-    #print("team_var:",team_var)
-    debug_webhook = os.getenv("DEBUG_WEBHOOK_URL")
-    team_var = str(team) + "_TEAM_WEBHOOK_URL"
-    try:
-        team_webhook = os.getenv(team_var)
-    except:
-        try:
-            send_slack(debug_webhook,f"achtung, could not resolve team_webhook_url on {instance_name} {INSTANCE_ID} - {team_var}")
-            team_webhook = debug_webhook
-        except:
-            print(f"AAAARGH! DEBUG WEBHOOK is None:${DEBUG_WEBHOOK_URL} or cannot send data out, debug")
+    loop_count = 0
     try:
         while True:
-            total_gpu_util = 0
+            loop_count += 1
+            if loop_count % POLICY_REFRESH_LOOPS == 0:
+                try:
+                    fresh_tags = get_instance_tags(ec2, instance_id)
+                    new_policy = fresh_tags.get("GPUMON_POLICY", policy)
+                    if new_policy != policy:
+                        policy = new_policy
+                        cfg = get_policy_config(policy)
+                        restart_backoff   = cfg["restart_backoff"]
+                        cpu_threshold     = cfg["cpu_threshold"]
+                        gpu_threshold     = cfg["gpu_threshold"]
+                        network_threshold = cfg["network_threshold"]
+                        shutdown_eta      = cfg["shutdown_eta"]
+                except Exception as exc:
+                    print(f"policy refresh error: {exc}")
+
+            current_time = datetime.now()
+            log_file = TMP_FILE_PREFIX + current_time.strftime("%Y-%m-%dT%H")
             cpu_util_tripped = False
+
+            # ── CPU utilization cache ────────────────────────────────────────
             try:
-                # Get per-core CPU utilization
-                per_core_utilization = get_per_core_cpu_utilization()
-
-                # Cache utilization data for each core
-                for i, core_util in enumerate(per_core_utilization):
-                    core_utilization_cache[i].append(core_util)
-
-                # Remove outdated data from the cache
-                current_time = datetime.now()
-                core_utilization_cache = [core_data[-int(CACHE_DURATION / 1):] for core_data in core_utilization_cache]
-                # Calculate average core utilization
-                average_core_utilization = calculate_average_core_utilization()
-                #print(average_core_utilization)
-                # Check if any core exceeds the threshold
-                if any(utilization > THRESHOLD_PERCENTAGE for utilization in average_core_utilization):
+                per_core = get_per_core_cpu_utilization()
+                for i, v in enumerate(per_core):
+                    core_cache[i].append(v)
+                core_cache = [d[-int(CACHE_DURATION / SLEEP_INTERVAL):] for d in core_cache]
+                avg_cores = calculate_average_core_utilization(core_cache)
+                if any(u > cpu_threshold for u in avg_cores):
                     cpu_util_tripped = True
-                    #print("CPU Threshold exceeded. Changing variable to True.")
-            except:
-                    print('Could not get cpu core utilization statistics, debug')
+            except Exception as exc:
+                print(f"CPU utilization error: {exc}")
+                per_core = []
+                avg_cores = []
 
+            # ── GPU metrics ──────────────────────────────────────────────────
+            # Capture all per-GPU results in one pass to avoid double-querying
+            # and to ensure pilot-light decision uses the same data as the log.
+            total_gpu_util = 0.0
+            valid_gpu_count = 0
+            gpu_query_failed = False
+            push_to_cw = True
+            gpu_results: list[tuple] = []
 
-            PUSH_TO_CW = True
+            for i in range(device_count):
+                try:
+                    handle = nvmlDeviceGetHandleByIndex(i)
+                except NVMLError as err:
+                    print(f"GPU {i}: nvmlDeviceGetHandleByIndex failed: {err} — skipping")
+                    gpu_query_failed = True
+                    push_to_cw = False
+                    gpu_results.append((None, "0", "0", "0.00", "0"))
+                    continue
+                pow_draw, ok1  = _get_power_draw(handle)
+                temp,     ok2  = _get_temp(handle)
+                util, gpu_util, mem_util, ok3 = _get_utilization(handle)
+                push_to_cw = push_to_cw and ok1 and ok2 and ok3
+                if not ok3:
+                    gpu_query_failed = True
+                elif util is not None:
+                    valid_gpu_count += 1
+                    total_gpu_util += float(gpu_util)
+                gpu_results.append((util, gpu_util, mem_util, pow_draw, temp))
 
-            # Find the metrics for each GPU on instance
-            for i in range(deviceCount):
-                handle = nvmlDeviceGetHandleByIndex(i)
+            # Only average over GPUs that actually reported utilization.
+            # Divide by device_count would count failed GPUs as 0% — idle — which
+            # could trigger a false shutdown when the true state is unknown.
+            average_gpu_util = total_gpu_util / valid_gpu_count if valid_gpu_count else 0.0
+            seconds = round(seconds_elapsed())
 
-                powDrawStr = getPowerDraw(handle)
-                temp = getTemp(handle)
-                util, gpu_util, mem_util = getUtilization(handle)
-                total_gpu_util += float(gpu_util)
-                
-            average_gpu_util = total_gpu_util / deviceCount
-            seconds = round(float(seconds_elapsed()))
-
-            # calculate combined network in and out last 5 min
-            network = get_network_stats(instance_id=INSTANCE_ID,network=network)
-            if network_tripped == 0 and network <= NETWORK_THRESHOLD:
+            # ── Network ──────────────────────────────────────────────────────
+            network = get_network_stats(cw, instance_id, network)
+            if network <= network_threshold:
                 network_tripped = 1
-            #print(f"name_tag:{instance_name} network:{network}")
-            if seconds >= RESTART_BACKOFF:
-                #print("DEBUG:round(float(average_gpu_util)) <= GPU_THRESHOLD and cpu_util_tripped == False and network <= NETWORK_THRESHOLD")
-                #print(f"DEBUG:{round(float(average_gpu_util))} <= {GPU_THRESHOLD} and {cpu_util_tripped} == False and {network} <= {NETWORK_THRESHOLD}")
-                if round(float(average_gpu_util)) <= GPU_THRESHOLD and cpu_util_tripped == False and network <= NETWORK_THRESHOLD:    
-            #cpu util tripped == True means that there was higher than threshold cpu core activity and we cant stop the instance because of it
+            else:
+                network_tripped = 0
+
+            # ── Alarm pilot light ────────────────────────────────────────────
+            if seconds >= restart_backoff:
+                if round(average_gpu_util) <= gpu_threshold and not cpu_util_tripped and network <= network_threshold and not gpu_query_failed:
                     if alarm_pilot_light == 0:
-                        #print(f'CPU or GPU below {THRESHOLD_PERCENTAGE}% threshold, turning pilot light ON')
                         alarm_pilot_light = 1
-                        mmessage=f"[ {current_time} ] INSTANCE: {instance_name} - {INSTANCE_ID} ({HOSTNAME}) CPU, GPU and NETWORK seems idle, TURNED ALARM PILOT LIGHT to: ON, instance is expected to stop in: 3 hours"
-                        try:
-                            send_slack(team_webhook, mmessage)
-                        except:
-                            print(f"Could not send slack to webhook:{team_webhook}")
+                        if dm_client and try_record_alert("shutdown_alert", shutdown_cooldown_hours):
+                            dm_client.send_dm(
+                                emp_name,
+                                f":alarm_clock: Your instance *{instance_name}* appears idle "
+                                f"and is scheduled to shut down in {shutdown_eta}.",
+                            )
                 else:
                     if alarm_pilot_light == 1:
                         alarm_pilot_light = 0
-                        mmessage=f"[ {current_time} ] INSTANCE: {instance_name} - {INSTANCE_ID} ({HOSTNAME}) CPU, GPU and NETWORK over minimum threshold, TURNED ALARM PILOT LIGHT to: OFF"
-                        try:
-                            send_slack(team_webhook, mmessage)
-                        except:
-                            print(f"Could not send slack to webhook:{team_webhook}")
-                    #print(f'CPU or GPU above {THRESHOLD_PERCENTAGE}% threshold, turning pilot light OFF')
             else:
                 alarm_pilot_light = 0
-            # Log the results
-            for i in range(deviceCount):
-                handle = nvmlDeviceGetHandleByIndex(i)
-                try:
-                    logResults(team, emp_name, i, util, gpu_util, mem_util, powDrawStr, temp, average_gpu_util, alarm_pilot_light, cpu_util_tripped, seconds,current_time,per_core_utilization,network,network_tripped)
-                except:
-                    print("could not write to disk")
-            sleep(sleep_interval)
+
+            # ── Log & push (reuse captured results — no second NVML query) ──
+            for i, (util_i, gpu_util_i, mem_util_i, pow_draw_i, temp_i) in enumerate(gpu_results):
+                _log_results(
+                    log_file, cw, instance_id, image_id, instance_type,
+                    team, emp_name, i, util_i, gpu_util_i, mem_util_i,
+                    pow_draw_i, temp_i, average_gpu_util, alarm_pilot_light,
+                    cpu_util_tripped, seconds, current_time, per_core,
+                    network, network_tripped, push_to_cw,
+                )
+
+            sleep(SLEEP_INTERVAL)
     finally:
         nvmlShutdown()
 
-if __name__=='__main__':
+
+if __name__ == "__main__":
     main()

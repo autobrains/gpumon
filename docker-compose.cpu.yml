@@ -1,0 +1,11 @@
+services:
+  gpumon:
+    runtime: runc
+    build: .
+    restart: unless-stopped
+    network_mode: host
+    pid: host
+    volumes:
+      - /tmp:/tmp
+    env_file:
+      - .env

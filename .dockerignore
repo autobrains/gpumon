@@ -1,0 +1,7 @@
+.git
+.gitignore
+*.md
+.env
+autoinstall.sh
+__pycache__
+*.pyc
