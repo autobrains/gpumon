@@ -41,7 +41,7 @@ TMP_FILE_PREFIX = "/tmp/GPU_TEMP_"
 SLEEP_INTERVAL = 10
 STORE_RESO = 60
 CACHE_DURATION = 300  # seconds of CPU history to keep
-POLICY_REFRESH_LOOPS = 60   # re-read GPUMON_POLICY tag every ~10 min
+POLICY_REFRESH_LOOPS = 60   # re-read instance tags every ~10 min
 
 
 def _get_power_draw(handle) -> tuple[str, bool]:
@@ -209,6 +209,10 @@ def main() -> None:
                         gpu_threshold     = cfg["gpu_threshold"]
                         network_threshold = cfg["network_threshold"]
                         shutdown_eta      = cfg["shutdown_eta"]
+                    # Team/Employee can be re-tagged mid-run (cost-center moves) —
+                    # follow them so CW dimensions and DMs track the current owner.
+                    team     = fresh_tags.get("Team", team)
+                    emp_name = fresh_tags.get("Employee", emp_name)
                 except Exception as exc:
                     print(f"policy refresh error: {exc}")
 

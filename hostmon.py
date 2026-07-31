@@ -27,6 +27,7 @@ NAMESPACE = "Host-metrics"
 TMP_FILE_PREFIX = "/tmp/HOSTMON_LOGS_"
 PUSH_INTERVAL = 60
 STORE_RESO = 60
+TAG_REFRESH_LOOPS = 10  # re-read instance tags every ~10 min
 
 
 def _top_process_by_memory() -> tuple[str, float]:
@@ -156,7 +157,25 @@ def main() -> None:
     print(f"hostmon started — instance {instance_id} ({instance_name}) region {region} "
           f"team {team} page_employee={page_employee}")
 
+    loop_count = 0
     while True:
+        loop_count += 1
+        if loop_count % TAG_REFRESH_LOOPS == 0:
+            # Team/Employee can be re-tagged mid-run (cost-center moves) —
+            # follow them so CW dimensions and DMs track the current owner.
+            try:
+                fresh_tags = get_instance_tags(ec2, instance_id)
+                team     = fresh_tags.get("Team", team)
+                emp_name = fresh_tags.get("Employee", emp_name)
+                dims = [
+                    {"Name": "InstanceId",   "Value": instance_id},
+                    {"Name": "InstanceType", "Value": meta["instance_type"]},
+                    {"Name": "InstanceTag",  "Value": team},
+                    {"Name": "EmployeeTag",  "Value": emp_name},
+                ]
+            except Exception as exc:
+                print(f"tag refresh error: {exc}")
+
         current_time = datetime.now()
         log_file = TMP_FILE_PREFIX + current_time.strftime("%Y-%m-%dT%H")
 
