@@ -11,6 +11,22 @@ IAM_ROLE_NAME  = "EC2IAMRole"
 TAG_KEY        = "GPUMON"
 BRANCH_TAG_KEY = "GPUMON_BRANCH"       # optional per-instance branch override
 
+# GPUMON tag states written by this lambda:
+#   ACTIVE      – gpumon verified running
+#   SUSPECT     – one check reported inactive; FAILED only if the next sweep
+#                 confirms, so a single 10-min blip never triggers the fixer
+#   FAILED      – two consecutive checks inactive → auto-fix on next sweep
+#   NOT_FIXED   – auto-fix genuinely ran and failed; re-checked cheaply every
+#                 sweep and self-recovers to ACTIVE if gpumon reappears
+#   UNREACHABLE – SSM could not answer (hung box, full disk, OOM livelock);
+#                 says nothing about gpumon, so no FAILED/fix escalation —
+#                 normal checking resumes once the box responds again
+#   INACTIVE    – instance not in the running state
+#   PENDING_SSM – install requested but SSM agent absent
+CHECK_ACTIVE   = "active"
+CHECK_INACTIVE = "inactive"
+CHECK_UNKNOWN  = "unknown"
+
 # All new installs and migrations use DOCKER_BRANCH.
 # Update this constant to "main" once feature/dockerize is merged.
 DOCKER_BRANCH  = "feature/dockerize"
@@ -217,9 +233,14 @@ def run_ssm_command(
     return None
 
 
-def is_gpumon_running(ssm, instance_id: str) -> bool:
-    """Return True if gpumon is running — either the Docker container (new) or
-    the legacy direct-Python process / systemd service (old)."""
+def check_gpumon_running(ssm, instance_id: str) -> str:
+    """Return CHECK_ACTIVE / CHECK_INACTIVE / CHECK_UNKNOWN.
+
+    The check script always echoes "active" or "inactive" when it actually
+    runs, so a missing/failed invocation or empty output means the *check*
+    failed (agent unreachable, box out of memory/disk), not that gpumon is
+    down — callers must not escalate to FAILED on CHECK_UNKNOWN.
+    """
     inv = run_ssm_command(
         ssm,
         instance_id,
@@ -237,9 +258,14 @@ def is_gpumon_running(ssm, instance_id: str) -> bool:
         poll_timeout=SSM_CHECK_TIMEOUT,
         execution_timeout=30,
     )
-    if inv is None:
-        return False
-    return inv.get("StandardOutputContent", "").strip() == "active"
+    if inv is None or inv.get("Status") != "Success":
+        return CHECK_UNKNOWN
+    out = inv.get("StandardOutputContent", "").strip()
+    if out == "active":
+        return CHECK_ACTIVE
+    if out == "inactive":
+        return CHECK_INACTIVE
+    return CHECK_UNKNOWN
 
 
 def is_gpumon_dockerized(ssm, instance_id: str) -> bool:
@@ -256,13 +282,16 @@ def is_gpumon_dockerized(ssm, instance_id: str) -> bool:
     return inv.get("StandardOutputContent", "").strip() == "active"
 
 
-def _has_docker_deployment(ssm, instance_id: str) -> bool:
-    """Return True if a Docker gpumon deployment exists on this instance.
+def _docker_deployment_state(ssm, instance_id: str) -> str:
+    """Return "yes" / "no" / CHECK_UNKNOWN for a Docker gpumon deployment.
 
     Accepts either the sentinel file (written at end of autoinstall.sh) OR the
     presence of docker-compose.yml in GPUMON_DIR.  The boot service restarts the
     container without recreating the sentinel, so either marker is sufficient.
     A legacy instance (never Dockerized) will have neither.
+
+    CHECK_UNKNOWN means the probe itself could not run (agent unreachable,
+    box resource-starved) — callers must not conclude "no deployment" from it.
     """
     # Check sentinel OR compose file: gpumon-boot.service starts the container
     # without recreating the sentinel, so a running post-boot instance may lack
@@ -274,9 +303,10 @@ def _has_docker_deployment(ssm, instance_id: str) -> bool:
         poll_timeout=SSM_CHECK_TIMEOUT,
         execution_timeout=30,
     )
-    if inv is None:
-        return False
-    return inv.get("StandardOutputContent", "").strip() == "yes"
+    if inv is None or inv.get("Status") != "Success":
+        return CHECK_UNKNOWN
+    out = inv.get("StandardOutputContent", "").strip()
+    return out if out in ("yes", "no") else CHECK_UNKNOWN
 
 
 # ---------------------------------------------------------------------------
@@ -360,14 +390,45 @@ def handle_install(ec2, ssm, instance_id: str, branch: str) -> None:
         update_tag(ec2, instance_id, "FAILED")
 
 
-def handle_check(ec2, ssm, instance_id: str) -> None:
+def handle_check(ec2, ssm, instance_id: str, tag_value: str) -> None:
     """Verify gpumon is running (Docker or legacy) and update the tag.
     Migration from legacy to Docker is triggered manually via GPUMON=MIGRATE.
+
+    inactive is only escalated to FAILED on the second consecutive sweep
+    (via SUSPECT), and an unanswerable check parks the instance in
+    UNREACHABLE instead of feeding the fixer a false positive.
     """
-    if is_gpumon_running(ssm, instance_id):
+    result = check_gpumon_running(ssm, instance_id)
+
+    if result == CHECK_ACTIVE:
+        update_tag(ec2, instance_id, "ACTIVE")
+    elif result == CHECK_INACTIVE:
+        if tag_value == "SUSPECT":
+            print(f"[{instance_id}] inactive on two consecutive sweeps — marking FAILED")
+            update_tag(ec2, instance_id, "FAILED")
+        else:
+            print(f"[{instance_id}] reported inactive — marking SUSPECT, will confirm next sweep")
+            update_tag(ec2, instance_id, "SUSPECT")
+    else:  # CHECK_UNKNOWN
+        print(f"[{instance_id}] check could not run (SSM unanswered) — marking UNREACHABLE")
+        if tag_value != "UNREACHABLE":
+            update_tag(ec2, instance_id, "UNREACHABLE")
+
+
+def handle_not_fixed(ec2, ssm, instance_id: str) -> None:
+    """Cheap re-check for NOT_FIXED instances so the state self-recovers.
+
+    NOT_FIXED used to be terminal: once set, the instance was skipped until a
+    human reset the tag — even after the on-box hourly updater resurrected the
+    container.  Now every sweep runs the quick is-running probe and promotes
+    the instance back to ACTIVE when gpumon is seen alive.  No fix attempts
+    are made from this state.
+    """
+    if check_gpumon_running(ssm, instance_id) == CHECK_ACTIVE:
+        print(f"[{instance_id}] NOT_FIXED but gpumon is running — self-recovering to ACTIVE")
         update_tag(ec2, instance_id, "ACTIVE")
     else:
-        update_tag(ec2, instance_id, "FAILED")
+        print(f"[{instance_id}] NOT_FIXED — awaiting manual resolution (re-checked, still not active)")
 
 
 def handle_fix(ec2, ssm, instance_id: str) -> None:
@@ -379,12 +440,23 @@ def handle_fix(ec2, ssm, instance_id: str) -> None:
 
     Legacy (non-Docker) instances that go FAILED are not auto-fixed here —
     they are tagged NOT_FIXED with a message to set GPUMON=MIGRATE manually.
+
+    Probes that cannot run at all (SSM unanswered) park the instance in
+    UNREACHABLE rather than NOT_FIXED: an unresponsive box says nothing about
+    the deployment, and NOT_FIXED must be reserved for fixes that genuinely
+    ran and failed.
     """
     # Guard: require an existing Docker gpumon deployment (sentinel present).
     # docker info alone is insufficient — a legacy instance may have Docker
     # installed without gpumon being containerized.  The sentinel is written at
     # the end of autoinstall.sh and survives a stopped/broken container.
-    if not _has_docker_deployment(ssm, instance_id):
+    deployment = _docker_deployment_state(ssm, instance_id)
+    if deployment == CHECK_UNKNOWN:
+        print(f"[{instance_id}] cannot verify deployment (SSM unanswered) — "
+              "marking UNREACHABLE, will re-check next sweep")
+        update_tag(ec2, instance_id, "UNREACHABLE")
+        return
+    if deployment == "no":
         print(f"[{instance_id}] no Docker gpumon deployment found — "
               "set GPUMON=MIGRATE to upgrade this legacy instance")
         update_tag(ec2, instance_id, "NOT_FIXED")
@@ -397,7 +469,7 @@ def handle_fix(ec2, ssm, instance_id: str) -> None:
         execution_timeout=SSM_FIX_TIMEOUT,
     )
     if inv is None:
-        update_tag(ec2, instance_id, "NOT_FIXED")
+        update_tag(ec2, instance_id, "UNREACHABLE")
         return
 
     time.sleep(5)
@@ -415,7 +487,10 @@ def handle_fix(ec2, ssm, instance_id: str) -> None:
         poll_timeout=SSM_INSTALL_TIMEOUT,
         execution_timeout=SSM_INSTALL_TIMEOUT,
     )
-    if inv is None or inv["Status"] != "Success":
+    if inv is None:
+        update_tag(ec2, instance_id, "UNREACHABLE")
+        return
+    if inv["Status"] != "Success":
         update_tag(ec2, instance_id, "NOT_FIXED")
         return
 
@@ -542,11 +617,11 @@ def lambda_handler(event, context):
                 elif state == "running" and tag_value == "FAILED":
                     handle_fix(ec2, ssm, instance_id)
 
-                elif state == "running" and tag_value in ("ACTIVE", "INACTIVE"):
-                    handle_check(ec2, ssm, instance_id)
+                elif state == "running" and tag_value in ("ACTIVE", "INACTIVE", "SUSPECT", "UNREACHABLE"):
+                    handle_check(ec2, ssm, instance_id, tag_value)
 
                 elif tag_value == "NOT_FIXED":
-                    print(f"[{instance_id}] NOT_FIXED — skipping until manually resolved")
+                    handle_not_fixed(ec2, ssm, instance_id)
 
             except ValueError as e:
                 print(f"[{region}][{instance_id}] invalid GPUMON_BRANCH tag — {e}")

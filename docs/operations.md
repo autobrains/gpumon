@@ -116,11 +116,21 @@ Lambda attempted the progressive fix (git pull + rebuild, then full reinstall) a
 
 ### GPUMON tag is NOT_FIXED
 
-This appears on legacy instances that go FAILED (no Docker installed) or on Docker instances where both fix steps failed and the issue requires manual attention.
+This appears on legacy instances that go FAILED (no Docker installed) or on Docker instances where both fix steps ran and failed. The Lambda keeps re-checking NOT_FIXED instances cheaply on every sweep and promotes them back to `ACTIVE` on its own if gpumon reappears (e.g. the on-box hourly updater resurrected the container) — so a lingering NOT_FIXED means gpumon really is down.
 
 **Fix:** investigate the root cause, then either:
 - Set `GPUMON = MIGRATE` to switch to Docker (legacy instances).
 - Set `GPUMON = install` for a clean reinstall (Docker instances).
+
+### GPUMON tag is UNREACHABLE
+
+The Lambda's SSM probe could not run on the instance at all — the box answered nothing (SSM agent down, disk full, OOM livelock, network hang). This deliberately does **not** count as a gpumon failure: no fix is attempted and the instance is re-checked on every sweep, rejoining the normal ACTIVE/SUSPECT flow as soon as SSM answers again.
+
+**Fix:** the instance itself needs attention, not gpumon. Check the EC2 instance status checks; if `StatusCheckFailed_Instance` is failing, reboot (hard-reboot via stop/start if a plain reboot doesn't take effect within ~5 minutes). Once the box is healthy the tag resolves itself.
+
+### GPUMON tag is SUSPECT
+
+One sweep saw gpumon inactive. No action needed — the next sweep either confirms (`FAILED`, which triggers the auto-fix) or clears it back to `ACTIVE`. Persistent flapping between ACTIVE and SUSPECT suggests someone is repeatedly stopping the container by hand.
 
 ### Slack DMs not arriving
 

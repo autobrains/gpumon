@@ -79,17 +79,24 @@ sudo bash /root/gpumon/autoinstall.sh
   (set manually)  ┌─────────┐     install OK?     ┌────────────────┐
                   │PENDING_ │──── Docker running ─►│    ACTIVE      │◄──┐
                   │   SSM   │                      └────────────────┘   │
-                  └─────────┘                             │ check fails  │
+                  └─────────┘                          │          ▲     │
+                                          check says   │          │     │
+                                          "inactive"   ▼          │     │
+                                                  ┌─────────┐ active    │
+                                                  │ SUSPECT │──────┘    │
+                                                  └─────────┘           │
+                                          inactive again │              │
                                                           ▼             │
-                  ┌─────────┐     fix succeeds     ┌────────────────┐  │
-                  │ FAILED  │◄────────────────────  │    FAILED      │  │
-                  └─────────┘     step 1 or 2 OK──►│                │  │
-                       │                            └────────────────┘  │
-                       │ no Docker (legacy)                 │ fix OK     │
-                       ▼                                    └───────────┘
-                  ┌─────────┐
-                  │NOT_FIXED│  (manual attention required)
-                  └─────────┘
+                  ┌─────────┐   fix step 1 or 2 OK ┌────────────────┐  │
+                  │NOT_FIXED│◄── both steps ran ────│    FAILED      │──┘
+                  └─────────┘   and failed, or      └────────────────┘
+                       │        legacy (no Docker)
+                       │ gpumon seen running again
+                       └──────────────────────────────────► ACTIVE
+
+  check/probe cannot run at all (SSM unanswered: hung box, full disk, OOM)
+      ──► UNREACHABLE — re-checked every sweep, back to normal flow once
+          the box answers; never escalated to FAILED/NOT_FIXED
 
   (set manually)  ┌─────────┐     migration OK    ┌────────────────┐
                   │ MIGRATE │────────────────────►│    ACTIVE      │
@@ -108,10 +115,12 @@ sudo bash /root/gpumon/autoinstall.sh
 |-----------|--------------|
 | `install` | Clone `GPUMON_BRANCH` (default `feature/dockerize`), run `autoinstall.sh` |
 | `PENDING_SSM` | Retry install (SSM agent was absent on first attempt) |
-| `ACTIVE` | Health-check; set `FAILED` if not running |
+| `ACTIVE` | Health-check; `SUSPECT` on first "inactive", `UNREACHABLE` if the check can't run |
 | `INACTIVE` | Health-check when instance comes back up |
+| `SUSPECT` | Health-check; `FAILED` on second consecutive "inactive", `ACTIVE` if recovered |
+| `UNREACHABLE` | Health-check retried every sweep; rejoins normal flow once SSM answers |
 | `FAILED` | Progressive fix: step 1 = `git pull` + rebuild; step 2 = full reinstall |
-| `NOT_FIXED` | Skipped — requires manual investigation |
+| `NOT_FIXED` | Cheap re-check every sweep; self-recovers to `ACTIVE` if gpumon reappears, otherwise awaits manual investigation |
 | `MIGRATE` | Stop legacy processes/units, clone Docker branch, run `autoinstall.sh` |
 | `DELETE` | `docker compose down`, remove timer, crontab entry, and repo |
 | *(empty)* | Ignored |
