@@ -108,8 +108,8 @@ sudo bash /root/gpumon/autoinstall.sh
 |-----------|--------------|
 | `install` | Clone `GPUMON_BRANCH` (default `main`), run `autoinstall.sh` |
 | `PENDING_SSM` | Retry install (SSM agent was absent on first attempt) |
-| `ACTIVE` | Health-check; set `FAILED` if not running |
-| `INACTIVE` | Health-check when instance comes back up |
+| `ACTIVE` | Health-check; set `FAILED` if not running. Docker boxes also get a staleness check: the clone must sit on `main` at the fetched origin head — a stale box is refreshed in place (`checkout -B` + `autoinstall.sh` + image rebuild). Boxes with a `GPUMON_BRANCH` tag are treated as deliberately pinned and are **exempt** from auto-refresh (plain health-check only). Per-box cooldown 1 h (`/var/log/gpumon-refresh.stamp`), max 3 refreshes per sweep |
+| `INACTIVE` | Health-check when instance comes back up (same staleness check, so a box that slept through updates converges on wake) |
 | `FAILED` | Progressive fix: step 1 = `git pull` + rebuild; step 2 = full reinstall |
 | `NOT_FIXED` | Skipped — requires manual investigation |
 | `MIGRATE` | Stop legacy processes/units, clone Docker branch, run `autoinstall.sh` |

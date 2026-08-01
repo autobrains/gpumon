@@ -18,20 +18,41 @@ DOCKER_BRANCH  = "main"
 _VALID_BRANCH_RE = re.compile(r'^[a-zA-Z0-9][a-zA-Z0-9/_.-]{0,99}$')
 
 def _validate_branch(branch: str) -> str:
-    """Raise ValueError if branch name contains shell-unsafe characters."""
-    if not _VALID_BRANCH_RE.match(branch):
+    """Raise ValueError unless branch is a safe, well-formed git branch name.
+
+    fullmatch (not match) so a trailing newline can't smuggle a line break into
+    the shell strings this value is interpolated into; the extra checks reject
+    names the charset allows but git refuses ('..', trailing '/', '.lock') so
+    the app-level guard, not git's downstream error, is the security boundary.
+    """
+    if (not _VALID_BRANCH_RE.fullmatch(branch)
+            or ".." in branch
+            or branch.endswith(("/", ".", ".lock"))):
         raise ValueError(f"Unsafe branch name rejected: {branch!r}")
     return branch
 
 SSM_COMMAND_POLL_INTERVAL = 5    # seconds between status polls
 SSM_CHECK_TIMEOUT   = 30         # quick is-running checks
+SSM_STATUS_TIMEOUT  = 45         # combined status probe (includes a 20s-bounded git fetch)
 SSM_FIX_TIMEOUT     = 180        # re-clone + rebuild
+SSM_REFRESH_TIMEOUT = 540        # refresh execution window — inside the 10-min sweep cadence
 SSM_INSTALL_TIMEOUT = 900        # full Docker install (apt + image pull + build)
 SSM_MIGRATE_TIMEOUT = 1200       # migration: stop old + full reinstall
 
 GPUMON_REPO = "https://github.com/autobrains/gpumon.git"
 GPUMON_DIR  = "/root/gpumon"
 SENTINEL    = "/var/log/gpumon.finished"
+
+# Staleness refresh: a running Docker box whose clone is off DOCKER_BRANCH or
+# behind its origin head gets converged in place.  The refresh target is ALWAYS
+# DOCKER_BRANCH — never the GPUMON_BRANCH tag, which is not SCP-protected and
+# must not steer what the sweep executes as root (a set GPUMON_BRANCH instead
+# opts the box out of auto-refresh entirely: the sanctioned pin mechanism).
+# The stamp file is the per-box cooldown; the per-sweep cap bounds total sweep
+# duration (stragglers are picked up by the next 10-minute sweep).
+REFRESH_STAMP           = "/var/log/gpumon-refresh.stamp"
+REFRESH_COOLDOWN        = 3600   # min seconds between refresh attempts per box
+MAX_REFRESHES_PER_SWEEP = 3
 
 # ---------------------------------------------------------------------------
 # SSM command bundles
@@ -66,6 +87,59 @@ FIX_STEP1_COMMANDS = [
     f"  sudo docker compose -f {GPUMON_DIR}/docker-compose.cpu.yml up -d --build; "
     f"fi",
 ]
+
+def check_status_commands(branch: str) -> list[str]:
+    """Single status probe for a running box: monitor state, deployment flavor,
+    and whether the clone is current on the desired branch.
+
+    Emits key=value lines.  Every probe degrades to a value ("inactive",
+    "legacy", "unknown", "missing") instead of failing, so the script always
+    exits 0 and a partial result never masquerades as an SSM failure.
+    """
+    branch = _validate_branch(branch)
+    return [
+        # running: Docker container (new) or direct process / systemd unit (legacy)
+        "( docker ps --filter 'name=gpumon' --filter 'status=running' --quiet 2>/dev/null | grep -q . && echo running=active ) || "
+        "( pgrep -f 'python.*gpumon\\.py' >/dev/null 2>&1 && echo running=active ) || "
+        "( pgrep -f 'python.*cpumon\\.py' >/dev/null 2>&1 && echo running=active ) || "
+        "( systemctl is-active --quiet gpumon 2>/dev/null && echo running=active ) || "
+        "( systemctl is-active --quiet cpumon 2>/dev/null && echo running=active ) || "
+        "echo running=inactive",
+        f"{{ test -f {SENTINEL} || test -f {GPUMON_DIR}/docker-compose.yml; }} && echo deploy=docker || echo deploy=legacy",
+        f"echo branch=$(git -C {GPUMON_DIR} rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)",
+        f"echo head=$(git -C {GPUMON_DIR} rev-parse HEAD 2>/dev/null || echo unknown)",
+        # Bounded fetch: on network trouble upstream stays 'unknown' and the box
+        # is simply not refreshed this sweep — never a FAILED verdict.
+        f"timeout 20 git -C {GPUMON_DIR} fetch origin --quiet 2>/dev/null || true",
+        f"echo upstream=$(git -C {GPUMON_DIR} rev-parse origin/{branch} 2>/dev/null || echo unknown)",
+        "systemctl is-enabled --quiet gpumon-update.timer 2>/dev/null && echo timer=enabled || echo timer=missing",
+        f"echo stamp_age=$(( $(date +%s) - $(cat {REFRESH_STAMP} 2>/dev/null || echo 0) ))",
+    ]
+
+
+def refresh_commands(branch: str) -> list[str]:
+    """Converge a stale Docker box to origin/<branch> and rebuild the container.
+
+    The cooldown stamp is written FIRST so a hung run cannot retrigger a
+    refresh storm.  autoinstall.sh regenerates halt_it.sh, the boot/update
+    scripts, and the timer (its sentinel short-circuits the heavy apt/docker
+    part) — but it exits early WITHOUT rebuilding the image, and the update
+    script sees no delta after the checkout below, hence the explicit compose
+    build mirroring FIX_STEP1's GPU/CPU selection.
+    """
+    branch = _validate_branch(branch)
+    return [
+        f"date +%s | sudo tee {REFRESH_STAMP}",
+        f"sudo timeout 60 git -C {GPUMON_DIR} fetch origin",
+        f"sudo git -C {GPUMON_DIR} checkout -B {branch} origin/{branch}",
+        f"sudo bash {GPUMON_DIR}/autoinstall.sh",
+        f"if nvidia-smi --list-gpus >/dev/null 2>&1 && [ \"$(nvidia-smi --list-gpus | wc -l)\" -gt 0 ]; then "
+        f"  sudo docker compose -f {GPUMON_DIR}/docker-compose.yml up -d --build; "
+        f"else "
+        f"  sudo docker compose -f {GPUMON_DIR}/docker-compose.cpu.yml up -d --build; "
+        f"fi",
+    ]
+
 
 # Fix step 2 (full reinstall): re-clone the repo (in case it is corrupted) then
 # run autoinstall.sh end-to-end.  Removing SENTINEL alone is not enough if the
@@ -360,14 +434,123 @@ def handle_install(ec2, ssm, instance_id: str, branch: str) -> None:
         update_tag(ec2, instance_id, "FAILED")
 
 
-def handle_check(ec2, ssm, instance_id: str) -> None:
-    """Verify gpumon is running (Docker or legacy) and update the tag.
-    Migration from legacy to Docker is triggered manually via GPUMON=MIGRATE.
+def _time_left(context, needed_ms: int) -> bool:
+    """True when the lambda has at least needed_ms of runtime left.
+
+    Degrades to True when no real Lambda context is available (local tests,
+    manual invocation harnesses).
     """
-    if is_gpumon_running(ssm, instance_id):
-        update_tag(ec2, instance_id, "ACTIVE")
-    else:
+    try:
+        return context.get_remaining_time_in_millis() > needed_ms
+    except AttributeError:
+        return True
+
+
+def _parse_kv(output: str) -> dict:
+    """Parse key=value lines from a status probe into a dict."""
+    facts = {}
+    for line in output.splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            facts[key.strip()] = value.strip()
+    return facts
+
+
+def _stale_reason(facts: dict, want_branch: str) -> str | None:
+    """Return why a Docker box needs a refresh, or None when it is current.
+
+    Legacy installs and unreadable clones return None: legacy migration stays
+    a manual GPUMON=MIGRATE decision, and a wiped/corrupt clone is the
+    FAILED → handle_fix flow's job (it re-clones; refresh only checkouts).
+
+    A missing auto-update timer is deliberately NOT a trigger: an operator may
+    have disabled it on purpose (same respect the halt_it.sh cron guard gives a
+    commented-out entry), and autoinstall.sh re-enables it as a side effect of
+    the next commit-driven refresh anyway.  The probe still reports timer= for
+    observability.
+    """
+    if facts.get("deploy") != "docker":
+        return None
+    branch   = facts.get("branch", "unknown")
+    head     = facts.get("head", "unknown")
+    upstream = facts.get("upstream", "unknown")
+    if head == "unknown":
+        return None
+    if branch != want_branch:
+        return f"on branch {branch!r}, want {want_branch!r}"
+    if upstream != "unknown" and head != upstream:
+        return f"at {head[:12]}, origin/{want_branch} is at {upstream[:12]}"
+    return None
+
+
+def handle_check(ec2, ssm, instance_id: str, want_branch: str | None,
+                 allow_refresh: bool = True) -> bool:
+    """Verify gpumon is running (Docker or legacy) and update the tag.
+
+    With want_branch set, Docker boxes additionally get a staleness check —
+    clone on want_branch at the fetched origin head — and a stale box is
+    converged in place via refresh_commands().  Returns True when a refresh was
+    fired so the caller can budget refreshes per sweep.  want_branch=None means
+    plain running check only (boxes pinned via GPUMON_BRANCH).  Migration from
+    legacy to Docker is still triggered manually via GPUMON=MIGRATE.
+    """
+    if want_branch is None:
+        running = is_gpumon_running(ssm, instance_id)
+        update_tag(ec2, instance_id, "ACTIVE" if running else "FAILED")
+        return False
+
+    inv = run_ssm_command(
+        ssm, instance_id, check_status_commands(want_branch),
+        poll_timeout=SSM_STATUS_TIMEOUT,
+        execution_timeout=SSM_STATUS_TIMEOUT,
+    )
+    if inv is None:
+        # Probe poll expired — degraded SSM or a slow box.  Fall back to the
+        # cheap legacy check before declaring FAILED: a slow-but-healthy box
+        # must not be sent through handle_fix's disruptive re-clone.
+        running = is_gpumon_running(ssm, instance_id)
+        update_tag(ec2, instance_id, "ACTIVE" if running else "FAILED")
+        return False
+
+    facts = _parse_kv(inv.get("StandardOutputContent", ""))
+    if facts.get("running") != "active":
         update_tag(ec2, instance_id, "FAILED")
+        return False
+    update_tag(ec2, instance_id, "ACTIVE")
+
+    reason = _stale_reason(facts, want_branch)
+    if reason is None:
+        return False
+
+    stamp_raw = facts.get("stamp_age", "")
+    try:
+        stamp_age = int(stamp_raw)
+    except ValueError:
+        # Fail closed: a box that can't report a sane stamp age must not be
+        # able to earn a refresh every sweep by garbling it.
+        print(f"[{instance_id}] stale ({reason}) but stamp age unreadable "
+              f"({stamp_raw!r}) — skipping refresh")
+        return False
+    if stamp_age < REFRESH_COOLDOWN:
+        print(f"[{instance_id}] stale ({reason}) but refreshed {stamp_age}s ago — cooldown")
+        return False
+    if not allow_refresh:
+        print(f"[{instance_id}] stale ({reason}) but sweep refresh budget exhausted — next sweep")
+        return False
+
+    print(f"[{instance_id}] stale — {reason} — refreshing to origin/{want_branch}")
+    inv = run_ssm_command(
+        ssm, instance_id, refresh_commands(want_branch),
+        poll_timeout=SSM_FIX_TIMEOUT,          # stop polling early; box keeps executing
+        execution_timeout=SSM_REFRESH_TIMEOUT,
+    )
+    if inv is not None and inv.get("Status") == "Success":
+        print(f"[{instance_id}] refresh complete")
+    else:
+        status = inv.get("Status") if inv else "no response"
+        print(f"[{instance_id}] refresh unconfirmed ({status}) — cooldown stamp "
+              "prevents re-fire; next sweep re-verifies")
+    return True
 
 
 def handle_fix(ec2, ssm, instance_id: str) -> None:
@@ -488,6 +671,8 @@ def handle_migrate(ec2, ssm, instance_id: str, branch: str) -> None:
 def lambda_handler(event, context):
     print("lambda_handler: starting fleet sweep")
 
+    refreshes_left = MAX_REFRESHES_PER_SWEEP
+
     for region in REGIONS:
         ec2, ssm = get_clients(region)
 
@@ -498,6 +683,11 @@ def lambda_handler(event, context):
             continue
 
         for instance in instances:
+            if not _time_left(context, 90_000):
+                print("lambda_handler: <90s runtime left — deferring the rest "
+                      "of the sweep to the next cycle")
+                return
+
             instance_id = instance["InstanceId"]
             state       = instance["State"]["Name"]
             gpumon_tag  = get_gpumon_tag(instance)
@@ -543,7 +733,22 @@ def lambda_handler(event, context):
                     handle_fix(ec2, ssm, instance_id)
 
                 elif state == "running" and tag_value in ("ACTIVE", "INACTIVE"):
-                    handle_check(ec2, ssm, instance_id)
+                    # Auto-refresh converges to DOCKER_BRANCH only.  A set
+                    # GPUMON_BRANCH means "deliberately pinned": plain running
+                    # check, no refresh.  The tag key is not SCP-protected, so
+                    # it must never steer what the sweep executes as root —
+                    # honoring it here would let any ec2:CreateTags principal
+                    # point a box at an arbitrary repo branch.
+                    if branch_override:
+                        print(f"[{instance_id}] pinned via {BRANCH_TAG_KEY}="
+                              f"{branch_override!r} — plain check, no auto-refresh")
+                        handle_check(ec2, ssm, instance_id, None)
+                    else:
+                        allow = (refreshes_left > 0
+                                 and _time_left(context, (SSM_FIX_TIMEOUT + 60) * 1000))
+                        if handle_check(ec2, ssm, instance_id, DOCKER_BRANCH,
+                                        allow_refresh=allow):
+                            refreshes_left -= 1
 
                 elif tag_value == "NOT_FIXED":
                     print(f"[{instance_id}] NOT_FIXED — skipping until manually resolved")
