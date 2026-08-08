@@ -27,11 +27,23 @@ else
     DTYPE="0"
 fi
 
-# POLICY is always fetched fresh so tag changes take effect on the next cron run
-POLICY=$(aws ec2 describe-tags \
+# POLICY is always fetched fresh so tag changes take effect on the next cron run.
+#
+# FAIL SAFE on a read ERROR. If describe-tags itself fails (throttling, a transient
+# API/network error, or an IAM hiccup) we must NOT fall through to a halting policy:
+# doing so would let a MONITOR box (buffet's spot lifecycle owns its idle-stop) or
+# any box be wrongly stopped/terminated on a momentary read failure. We distinguish
+# "the call FAILED" (non-zero exit → we cannot know the policy → skip this cycle and
+# never halt) from "the call SUCCEEDED but the tag is genuinely absent" (returns the
+# literal "None" → STANDARD, the unchanged default for legacy untagged boxes).
+if ! POLICY=$(aws ec2 describe-tags \
     --filters "Name=resource-id,Values=${INSTANCE_ID}" "Name=key,Values=GPUMON_POLICY" \
-    --query "Tags[0].Value" --output text --region "${AWSREGION}" 2>/dev/null)
-# Treat missing/None tag as STANDARD
+    --query "Tags[0].Value" --output text --region "${AWSREGION}" 2>/dev/null); then
+    echo "[ $(date) ] describe-tags (GPUMON_POLICY) FAILED — cannot resolve policy; failing safe (NOT halting) this cycle."
+    exit 0
+fi
+# Call succeeded: a genuinely-untagged box returns "None" (or, defensively, empty)
+# → STANDARD, exactly as before.
 if [ -z "${POLICY}" ] || [ "${POLICY}" = "None" ]; then
     POLICY="STANDARD"
 fi
