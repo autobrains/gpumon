@@ -36,6 +36,17 @@ if [ -z "${POLICY}" ] || [ "${POLICY}" = "None" ]; then
     POLICY="STANDARD"
 fi
 
+# MONITOR: metrics-only. The container agent keeps publishing utilization + the
+# Alarm-Pilot idle signal, but this cron NEVER halts the box — an external owner
+# (e.g. buffet's spot lifecycle) reads that signal and images+terminates the box
+# itself, so GPUMON must not stop/terminate it first (a one-time Spot Instance
+# can't be stopped, and a raw terminate would lose un-imaged data). Early-exit
+# before any shutdown logic; a no-op for every other policy.
+if [ "${POLICY}" = "MONITOR" ]; then
+    echo "[ $(date) ] Policy MONITOR — metrics only; external owner handles idle-stop. Not halting."
+    exit 0
+fi
+
 # Project tag — fetched fresh; used to select ASG-aware termination for SPOT
 PROJECT=$(aws ec2 describe-tags \
     --filters "Name=resource-id,Values=${INSTANCE_ID}" "Name=key,Values=Project" \

@@ -129,8 +129,16 @@ Controls idle-detection sensitivity in `halt_it.sh` and the Python monitors.
 | `SEVERE` | 0 | 20 % | 2 % | 15 000 pkts |
 | `SPOT` | 0 | 20 % | 10 % | 30 000 pkts |
 | `SUSPEND` | 10 days | 10 % | 10 % | 15 000 pkts |
+| `MONITOR` | 0 | 20 % | 10 % | 30 000 pkts |
 
 `SPOT` additionally suppresses all employee Slack DMs regardless of the `PAGE_EMPLOYEE` tag.
+
+`MONITOR` is **metrics-only**: the container agent keeps publishing utilization and
+the Alarm-Pilot idle signal, but `halt_it.sh` **never halts** a MONITOR box — an
+external owner (e.g. the buffet spot lifecycle) reads that signal and stops/images
+the box itself. Use it for instances whose stop/terminate is managed elsewhere
+(notably one-time Spot Instances, which can't be stopped and must be imaged before
+terminate). Employee shutdown DMs are suppressed (it never shuts the box down).
 
 ---
 

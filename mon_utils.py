@@ -71,6 +71,10 @@ POLICIES: dict[str, dict[str, Any]] = {
     "SPOT":     {"restart_backoff": 0,      "cpu_threshold": 20, "gpu_threshold": 10, "network_threshold": 30000, "shutdown_eta": "~15 minutes"},
     "SUSPEND":  {"restart_backoff": 864000, "cpu_threshold": 10, "gpu_threshold": 10, "network_threshold": 15000, "shutdown_eta": "~2 hours"},
     "STANDARD": {"restart_backoff": 0,      "cpu_threshold": 10, "gpu_threshold": 10, "network_threshold": 15000, "shutdown_eta": "~1 hour"},
+    # MONITOR: metrics-only — halt_it.sh never halts a MONITOR box (an external
+    # owner reads the Alarm-Pilot idle signal and stops it). Thresholds still drive
+    # that idle signal (mirroring SPOT); shutdown DM is suppressed since it never halts.
+    "MONITOR":  {"restart_backoff": 0,      "cpu_threshold": 20, "gpu_threshold": 10, "network_threshold": 30000, "shutdown_eta": "n/a (external)"},
 }
 
 
