@@ -27,13 +27,36 @@ else
     DTYPE="0"
 fi
 
-# POLICY is always fetched fresh so tag changes take effect on the next cron run
-POLICY=$(aws ec2 describe-tags \
+# POLICY is always fetched fresh so tag changes take effect on the next cron run.
+#
+# FAIL SAFE on a read ERROR. If describe-tags itself fails (throttling, a transient
+# API/network error, or an IAM hiccup) we must NOT fall through to a halting policy:
+# doing so would let a MONITOR box (buffet's spot lifecycle owns its idle-stop) or
+# any box be wrongly stopped/terminated on a momentary read failure. We distinguish
+# "the call FAILED" (non-zero exit → we cannot know the policy → skip this cycle and
+# never halt) from "the call SUCCEEDED but the tag is genuinely absent" (returns the
+# literal "None" → STANDARD, the unchanged default for legacy untagged boxes).
+if ! POLICY=$(aws ec2 describe-tags \
     --filters "Name=resource-id,Values=${INSTANCE_ID}" "Name=key,Values=GPUMON_POLICY" \
-    --query "Tags[0].Value" --output text --region "${AWSREGION}" 2>/dev/null)
-# Treat missing/None tag as STANDARD
+    --query "Tags[0].Value" --output text --region "${AWSREGION}" 2>/dev/null); then
+    echo "[ $(date) ] describe-tags (GPUMON_POLICY) FAILED — cannot resolve policy; failing safe (NOT halting) this cycle."
+    exit 0
+fi
+# Call succeeded: a genuinely-untagged box returns "None" (or, defensively, empty)
+# → STANDARD, exactly as before.
 if [ -z "${POLICY}" ] || [ "${POLICY}" = "None" ]; then
     POLICY="STANDARD"
+fi
+
+# MONITOR: metrics-only. The container agent keeps publishing utilization + the
+# Alarm-Pilot idle signal, but this cron NEVER halts the box — an external owner
+# (e.g. buffet's spot lifecycle) reads that signal and images+terminates the box
+# itself, so GPUMON must not stop/terminate it first (a one-time Spot Instance
+# can't be stopped, and a raw terminate would lose un-imaged data). Early-exit
+# before any shutdown logic; a no-op for every other policy.
+if [ "${POLICY}" = "MONITOR" ]; then
+    echo "[ $(date) ] Policy MONITOR — metrics only; external owner handles idle-stop. Not halting."
+    exit 0
 fi
 
 # Project tag — fetched fresh; used to select ASG-aware termination for SPOT

@@ -108,9 +108,11 @@ def main() -> None:
         policy = "STANDARD"
         create_tag(ec2, instance_id, "GPUMON_POLICY", policy)
 
-    # SPOT/SEVERE: no idle shutdown DM (disk/memory alerts handled by hostmon.py)
+    # SPOT/SEVERE/MONITOR: no idle shutdown DM. SPOT/SEVERE handle alerts via
+    # hostmon.py; MONITOR never halts (an external owner does), so a "scheduled to
+    # shut down" DM would be misleading.
     page_employee = (
-        policy not in ("SPOT", "SEVERE")
+        policy not in ("SPOT", "SEVERE", "MONITOR")
         and tags.get("PAGE_EMPLOYEE", "True").lower() != "false"
     )
 
