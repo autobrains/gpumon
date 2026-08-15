@@ -41,6 +41,9 @@ REPO_DIR="${REPO_DIR}"
 ensure_container_up() {
     local build="\${1:-}"   # pass "--build" to force an image rebuild
     cd "\$REPO_DIR"
+    # Guarantee .env before ANY compose up — env_file: .env is required, and a
+    # pruned/fresh repo may lack the gitignored file. Idempotent (keeps an existing one).
+    bash "\$REPO_DIR/ensure_env.sh"
     if command -v nvidia-smi &>/dev/null \\
             && nvidia-smi --list-gpus >/dev/null 2>&1 \\
             && [ "\$(nvidia-smi --list-gpus | wc -l)" -gt 0 ]; then
@@ -106,19 +109,11 @@ pkill -f "python3 /root/gpumon/gpumon.py" 2>/dev/null || true
 pkill -f "python3 /root/gpumon/cpumon.py" 2>/dev/null || true
 pkill -f "python3 /root/gpumon/hostmon.py" 2>/dev/null || true
 
-# Ensure .env exists so docker compose can satisfy env_file: .env.
-# Idempotent — skipped when a .env is already present so manual edits survive.
-# Needed at boot because the AMI's source repo is gitignore-stripped (.env is
-# never tracked), so a fresh clone or new SPOT launch arrives without one.
-if [ ! -f "\$REPO_DIR/.env" ]; then
-    echo "[\$(date)] gpumon-boot: .env missing — writing defaults"
-    cat > "\$REPO_DIR/.env" <<'ENVEOF'
-GPUMON_SLACK_SECRET_ID=IT/SLACK_BOT_TOKEN
-GPUMON_SLACK_SECRET_REGION=eu-west-1
-GPUMON_SECRET_ID=AB/InstanceRole
-GPUMON_SECRET_REGION=eu-west-1
-ENVEOF
-fi
+# Ensure .env exists so docker compose can satisfy env_file: .env. Idempotent —
+# an existing .env (incl. manual edits) is preserved. Needed at boot because the
+# gitignored .env is never tracked, so a fresh clone or new SPOT launch arrives
+# without one. Single source of truth for the defaults: ensure_env.sh.
+bash "\$REPO_DIR/ensure_env.sh"
 
 if command -v nvidia-smi &>/dev/null \\
         && nvidia-smi --list-gpus >/dev/null 2>&1 \\
@@ -205,6 +200,15 @@ systemctl daemon-reload
 systemctl enable gpumon-boot.service
 systemctl enable --now gpumon-update.timer
 echo "[autoinstall] Service files refreshed"
+
+# ── Guarantee .env BEFORE the sentinel early-exit ────────────────────────────
+# Runs on EVERY invocation (like the service-file refresh above), so a re-run on
+# a box imaged WITH the sentinel (a resurrected / AMI clone) — or any box whose
+# gitignored .env never landed — gets one before the early-exit returns. Without
+# this the .env generation sat only in the main install body below, which the
+# sentinel skips, so `docker compose up` (in the caller, or gpumon-update.sh)
+# then failed on the missing env_file. Idempotent — keeps an existing .env.
+bash "${REPO_DIR}/ensure_env.sh"
 
 # ── Early exit if already fully installed ────────────────────────────────────
 if [ -f "$SENTINEL" ]; then
@@ -295,27 +299,11 @@ elif $HAS_GPU; then
     fi
 fi
 
-# ── Auto-generate .env from Secrets Manager if not present ────────────────────
-# Never overwrites an existing .env so manual configuration is preserved.
-if [ -f "${REPO_DIR}/.env" ]; then
-    echo "[autoinstall] .env already exists — skipping auto-generation"
-else
-    echo "[autoinstall] .env not found — generating from Secrets Manager..."
-
-    # Secret IDs — callers may override via env vars before invoking autoinstall.sh
-    _SLACK_SECRET_ID="${GPUMON_SLACK_SECRET_ID:-IT/SLACK_BOT_TOKEN}"
-    _SLACK_SECRET_REGION="${GPUMON_SLACK_SECRET_REGION:-eu-west-1}"
-    _INST_SECRET_ID="${GPUMON_SECRET_ID:-AB/InstanceRole}"
-    _INST_SECRET_REGION="${GPUMON_SECRET_REGION:-eu-west-1}"
-
-    {
-        echo "GPUMON_SLACK_SECRET_ID=${_SLACK_SECRET_ID}"
-        echo "GPUMON_SLACK_SECRET_REGION=${_SLACK_SECRET_REGION}"
-        echo "GPUMON_SECRET_ID=${_INST_SECRET_ID}"
-        echo "GPUMON_SECRET_REGION=${_INST_SECRET_REGION}"
-    } > "${REPO_DIR}/.env"
-    echo "[autoinstall] .env written"
-fi
+# ── .env already guaranteed above ─────────────────────────────────────────────
+# ensure_env.sh ran in the "always refreshed" section (before the sentinel
+# early-exit), so .env is present here regardless of install state. The default
+# set + override knobs (GPUMON_SLACK_SECRET_ID, GPUMON_SECRET_ID, …) now live in
+# exactly one place — ensure_env.sh — rather than being duplicated per script.
 
 # ── Build and start container ─────────────────────────────────────────────────
 # Use up --build rather than separate build + up: standalone "docker compose build"
