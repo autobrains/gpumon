@@ -81,6 +81,12 @@ def install_commands(branch: str) -> list[str]:
 # The docker compose command mirrors autoinstall.sh's GPU vs CPU selection.
 FIX_STEP1_COMMANDS = [
     f"cd {GPUMON_DIR} && sudo git fetch origin && sudo git reset --hard @{{upstream}}",
+    # The reset above pulls ensure_env.sh onto the box (even one still running an
+    # older autoinstall.sh), so this self-heals a missing .env WITHOUT re-cloning.
+    # Both compose files declare `env_file: .env` (required — a missing file aborts
+    # `up`); the gitignored .env is absent on a fresh clone / new SPOT launch / AMI.
+    # Idempotent: an existing .env (incl. manual edits) is left untouched.
+    f"sudo bash {GPUMON_DIR}/ensure_env.sh",
     f"if nvidia-smi --list-gpus >/dev/null 2>&1 && [ \"$(nvidia-smi --list-gpus | wc -l)\" -gt 0 ]; then "
     f"  sudo docker compose -f {GPUMON_DIR}/docker-compose.yml up -d --build; "
     f"else "
