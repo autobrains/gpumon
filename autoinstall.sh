@@ -12,6 +12,38 @@ HALT_HOST="/usr/local/sbin/halt_it.sh"
 UPDATE_SCRIPT="/usr/local/sbin/gpumon-update.sh"
 BOOT_SCRIPT="/usr/local/sbin/gpumon-boot.sh"
 
+# ── De-root: repo lives at /opt/gpumon, owned by the unprivileged gpumon user ─
+# The hourly updater's git fetch/reset used to run as root inside /root/gpumon,
+# which GuardDuty Runtime Monitoring flags as PrivilegeEscalation:Runtime/
+# ElevationToRoot on every tick, fleet-wide (2,671 findings in one week).
+# Git — the network-facing step — now runs as a dedicated system user; docker,
+# systemd, and apt steps stay root. /root is 0700, so the repo must live
+# outside it for a non-root owner to reach it. Migration is self-applying: the
+# updater re-runs this installer on every repo change, so each host moves its
+# own copy on the first post-merge tick (stopped hosts on their next boot).
+TARGET_DIR="/opt/gpumon"
+SVC_USER="gpumon"
+
+if ! id -u "${SVC_USER}" &>/dev/null; then
+    useradd --system -M --home-dir "${TARGET_DIR}" --shell /usr/sbin/nologin "${SVC_USER}"
+    echo "[autoinstall] created system user ${SVC_USER}"
+fi
+
+if [ "${REPO_DIR}" != "${TARGET_DIR}" ]; then
+    echo "[autoinstall] migrating repo ${REPO_DIR} -> ${TARGET_DIR}"
+    if [ ! -d "${TARGET_DIR}/.git" ]; then
+        rm -rf "${TARGET_DIR}"
+        cp -a "${REPO_DIR}" "${TARGET_DIR}"
+    fi
+    chown -R "${SVC_USER}:${SVC_USER}" "${TARGET_DIR}"
+    # Re-exec from the new location so every REPO_DIR baked into the generated
+    # scripts points at /opt/gpumon. The old copy is deliberately left behind:
+    # the pre-migration updater that invoked us cds into it once more after we
+    # return. It is stale and unused from the next tick on (safe to rm later).
+    exec bash "${TARGET_DIR}/autoinstall.sh"
+fi
+chown -R "${SVC_USER}:${SVC_USER}" "${REPO_DIR}"
+
 # ── Service/script files (always refreshed, even on re-runs) ─────────────────
 # These run before the sentinel check so every Lambda-triggered re-run updates
 # halt_it.sh, gpumon-boot.sh, and gpumon-update.sh regardless of install state.
@@ -43,7 +75,7 @@ ensure_container_up() {
     cd "\$REPO_DIR"
     # Guarantee .env before ANY compose up — env_file: .env is required, and a
     # pruned/fresh repo may lack the gitignored file. Idempotent (keeps an existing one).
-    bash "\$REPO_DIR/ensure_env.sh"
+    runuser -u ${SVC_USER} -- bash "\$REPO_DIR/ensure_env.sh"
     if command -v nvidia-smi &>/dev/null \\
             && nvidia-smi --list-gpus >/dev/null 2>&1 \\
             && [ "\$(nvidia-smi --list-gpus | wc -l)" -gt 0 ]; then
@@ -60,10 +92,10 @@ ensure_container_up() {
     fi
 }
 
-BEFORE=\$(git -C "\$REPO_DIR" rev-parse HEAD)
-git -C "\$REPO_DIR" fetch origin --quiet
-git -C "\$REPO_DIR" reset --hard @{upstream} --quiet
-AFTER=\$(git -C "\$REPO_DIR" rev-parse HEAD)
+BEFORE=\$(runuser -u ${SVC_USER} -- git -C "\$REPO_DIR" rev-parse HEAD)
+runuser -u ${SVC_USER} -- git -C "\$REPO_DIR" fetch origin --quiet
+runuser -u ${SVC_USER} -- git -C "\$REPO_DIR" reset --hard @{upstream} --quiet
+AFTER=\$(runuser -u ${SVC_USER} -- git -C "\$REPO_DIR" rev-parse HEAD)
 
 if [ "\$BEFORE" = "\$AFTER" ]; then
     # No repo change — but self-heal if the container was removed or stopped (e.g.
@@ -113,7 +145,7 @@ pkill -f "python3 /root/gpumon/hostmon.py" 2>/dev/null || true
 # an existing .env (incl. manual edits) is preserved. Needed at boot because the
 # gitignored .env is never tracked, so a fresh clone or new SPOT launch arrives
 # without one. Single source of truth for the defaults: ensure_env.sh.
-bash "\$REPO_DIR/ensure_env.sh"
+runuser -u ${SVC_USER} -- bash "\$REPO_DIR/ensure_env.sh"
 
 if command -v nvidia-smi &>/dev/null \\
         && nvidia-smi --list-gpus >/dev/null 2>&1 \\
@@ -208,7 +240,7 @@ echo "[autoinstall] Service files refreshed"
 # this the .env generation sat only in the main install body below, which the
 # sentinel skips, so `docker compose up` (in the caller, or gpumon-update.sh)
 # then failed on the missing env_file. Idempotent — keeps an existing .env.
-bash "${REPO_DIR}/ensure_env.sh"
+runuser -u "${SVC_USER}" -- bash "${REPO_DIR}/ensure_env.sh"
 
 # ── Early exit if already fully installed ────────────────────────────────────
 if [ -f "$SENTINEL" ]; then
