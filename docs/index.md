@@ -53,7 +53,7 @@ Lambda runs autoinstall.sh via SSM
 GPUMON tag → ACTIVE
 ```
 
-From that point, the Lambda health-checks the instance on every sweep. If it detects a failure it runs a progressive fix (fast git pull first, full reinstall second). If neither works, it sets `NOT_FIXED` for manual attention.
+From that point, the Lambda health-checks the instance on every sweep. A failure must be confirmed on two consecutive sweeps (`SUSPECT`) before the progressive fix runs (fast git pull first, full reinstall second). If neither fix works, it sets `NOT_FIXED` — still re-checked cheaply each sweep, so it self-recovers to `ACTIVE` if gpumon comes back (e.g. the on-box hourly updater resurrects the container). A box whose SSM agent cannot answer at all (hung, full disk, OOM) is parked in `UNREACHABLE` instead of being misdiagnosed as failed.
 
 ---
 

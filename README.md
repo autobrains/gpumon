@@ -79,17 +79,24 @@ sudo bash /root/gpumon/autoinstall.sh
   (set manually)  ┌─────────┐     install OK?     ┌────────────────┐
                   │PENDING_ │──── Docker running ─►│    ACTIVE      │◄──┐
                   │   SSM   │                      └────────────────┘   │
-                  └─────────┘                             │ check fails  │
+                  └─────────┘                          │          ▲     │
+                                          check says   │          │     │
+                                          "inactive"   ▼          │     │
+                                                  ┌─────────┐ active    │
+                                                  │ SUSPECT │──────┘    │
+                                                  └─────────┘           │
+                                          inactive again │              │
                                                           ▼             │
-                  ┌─────────┐     fix succeeds     ┌────────────────┐  │
-                  │ FAILED  │◄────────────────────  │    FAILED      │  │
-                  └─────────┘     step 1 or 2 OK──►│                │  │
-                       │                            └────────────────┘  │
-                       │ no Docker (legacy)                 │ fix OK     │
-                       ▼                                    └───────────┘
-                  ┌─────────┐
-                  │NOT_FIXED│  (manual attention required)
-                  └─────────┘
+                  ┌─────────┐   fix step 1 or 2 OK ┌────────────────┐  │
+                  │NOT_FIXED│◄── both steps ran ────│    FAILED      │──┘
+                  └─────────┘   and failed, or      └────────────────┘
+                       │        legacy (no Docker)
+                       │ gpumon seen running again
+                       └──────────────────────────────────► ACTIVE
+
+  check/probe cannot run at all (SSM unanswered: hung box, full disk, OOM)
+      ──► UNREACHABLE — re-checked every sweep, back to normal flow once
+          the box answers; never escalated to FAILED/NOT_FIXED
 
   (set manually)  ┌─────────┐     migration OK    ┌────────────────┐
                   │ MIGRATE │────────────────────►│    ACTIVE      │
@@ -108,10 +115,12 @@ sudo bash /root/gpumon/autoinstall.sh
 |-----------|--------------|
 | `install` | Clone `GPUMON_BRANCH` (default `main`), run `autoinstall.sh` |
 | `PENDING_SSM` | Retry install (SSM agent was absent on first attempt) |
-| `ACTIVE` | Health-check; set `FAILED` if not running. Docker boxes also get a staleness check: the clone must sit on `main` at the fetched origin head — a stale box is refreshed in place (`checkout -B` + `autoinstall.sh` + image rebuild). Boxes with a `GPUMON_BRANCH` tag are treated as deliberately pinned and are **exempt** from auto-refresh (plain health-check only). Per-box cooldown 1 h (`/var/log/gpumon-refresh.stamp`), max 3 refreshes per sweep |
+| `ACTIVE` | Health-check; `SUSPECT` on first "inactive", `UNREACHABLE` if the check can't run. Docker boxes also get a staleness check: the clone must sit on `main` at the fetched origin head — a stale box is refreshed in place (`checkout -B` + `autoinstall.sh` + image rebuild). Boxes with a `GPUMON_BRANCH` tag are treated as deliberately pinned and are **exempt** from auto-refresh (plain health-check only). Per-box cooldown 1 h (`/var/log/gpumon-refresh.stamp`), max 3 refreshes per sweep |
 | `INACTIVE` | Health-check when instance comes back up (same staleness check, so a box that slept through updates converges on wake) |
+| `SUSPECT` | Health-check; `FAILED` on second consecutive "inactive", `ACTIVE` if recovered |
+| `UNREACHABLE` | Health-check retried every sweep; rejoins normal flow once SSM answers |
 | `FAILED` | Progressive fix: step 1 = `git pull` + rebuild; step 2 = full reinstall |
-| `NOT_FIXED` | Skipped — requires manual investigation |
+| `NOT_FIXED` | Cheap re-check every sweep; self-recovers to `ACTIVE` if gpumon reappears, otherwise awaits manual investigation |
 | `MIGRATE` | Stop legacy processes/units, clone Docker branch, run `autoinstall.sh` |
 | `DELETE` | `docker compose down`, remove timer, crontab entry, and repo |
 | *(empty)* | Ignored |
