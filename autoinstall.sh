@@ -61,6 +61,39 @@ else
     echo "[autoinstall] halt_it.sh already in crontab"
 fi
 
+# ── AWS CLI (halt_it.sh runs on the HOST via cron and needs it) ──────────────
+# The GPU Deep Learning AMI ships the aws CLI, but plain-Ubuntu CPU boxes do NOT,
+# so halt_it.sh's `aws ec2 describe-tags` failed every cycle (127 "aws: not
+# found") and those boxes never idle-stopped. Install it here, idempotently.
+# This lives in the always-refreshed section (before the sentinel early-exit) so
+# boxes imaged WITH the sentinel also self-heal on their next gpumon-update.
+if ! command -v aws &>/dev/null; then
+    echo "[autoinstall] aws CLI missing on host — installing v2..."
+    systemctl stop unattended-upgrades apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
+    while fuser /var/lib/apt/lists/lock /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend /var/cache/apt/archives/lock >/dev/null 2>&1; do
+        echo "[autoinstall] waiting for apt lock (aws CLI prereqs)..."; sleep 5
+    done
+    apt-get -o DPkg::Lock::Timeout=120 install -y curl unzip >/dev/null 2>&1 \
+        || { apt-get -o DPkg::Lock::Timeout=120 update -q; apt-get -o DPkg::Lock::Timeout=120 install -y curl unzip; }
+    case "$(dpkg --print-architecture)" in
+        arm64) _awszip="https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" ;;
+        *)     _awszip="https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" ;;
+    esac
+    _awstmp="$(mktemp -d)"
+    if curl -fsSL "$_awszip" -o "$_awstmp/awscliv2.zip" \
+            && unzip -q "$_awstmp/awscliv2.zip" -d "$_awstmp" \
+            && "$_awstmp/aws/install" --update --bin-dir /usr/local/bin; then
+        ln -sf /usr/local/bin/aws /usr/bin/aws   # cron's minimal PATH (/usr/bin:/bin) must find it
+        echo "[autoinstall] aws CLI installed: $(/usr/local/bin/aws --version 2>&1)"
+    else
+        echo "[autoinstall] aws v2 installer failed — falling back to apt awscli (v1)"
+        apt-get -o DPkg::Lock::Timeout=120 install -y awscli || true
+    fi
+    rm -rf "$_awstmp"
+else
+    echo "[autoinstall] aws CLI present: $(aws --version 2>&1)"
+fi
+
 # ── Auto-update script ────────────────────────────────────────────────────────
 cat > "${UPDATE_SCRIPT}" << UPDATESCRIPT
 #!/bin/bash
