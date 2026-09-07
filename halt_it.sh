@@ -6,6 +6,15 @@
 # Example cron entry:
 #   */10 * * * * bash /root/gpumon/halt_it.sh | tee -a /tmp/halt_it_log.txt
 
+# ── PATH ──────────────────────────────────────────────────────────────────────
+# cron runs with a minimal PATH (typically /usr/bin:/bin) that omits
+# /usr/local/bin, where the aws CLI v2 installs. On non-DLAMI hosts (plain-Ubuntu
+# CPU boxes, which lack a preinstalled aws CLI) that left `aws` unreachable, so
+# EVERY describe-tags below hit the fail-safe and the box never idle-stopped.
+# Force a complete PATH so the aws CLI is found regardless of cron's environment
+# or the install prefix.
+export PATH="/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+
 # ── IMDS + identity ───────────────────────────────────────────────────────────
 # Always fetch fresh — IMDS calls are fast (<5 ms on EC2) and caching caused
 # stale-DTYPE bugs after instance type changes and stale INSTANCE_ID after AMI cloning.
