@@ -156,6 +156,8 @@ Copy `.env.example` to `.env` in the repo directory before starting the containe
 | `MEMORY_ALERT_USED_PCT` | `90` | DM employee when RAM usage exceeds this % |
 | `ALERT_COOLDOWN_HOURS` | `12` | Minimum hours between repeat disk/memory DMs |
 | `SHUTDOWN_ALERT_COOLDOWN_HOURS` | `4` | Minimum hours between repeat idle-shutdown DMs |
+| `GPU_IDLE_NAG_HOURS` | `72` | DM employee when the GPU alone has been idle this long, even while CPU/network activity keeps the pilot light off (`0` disables) |
+| `GPU_IDLE_NAG_REPEAT_HOURS` | `24` | Minimum hours between repeat GPU-idle DMs |
 
 ---
 
@@ -175,8 +177,14 @@ The `Employee` EC2 tag can be an email address (`user@company.com`) for exact lo
 | Event | Recipient | Cooldown |
 |-------|-----------|---------|
 | Alarm pilot light ON (instance idle, will stop) | Employee DM | 4 h |
+| GPU idle ≥ `GPU_IDLE_NAG_HOURS` while CPU/network still reads active | Employee DM | 24 h |
 | Disk free < `DISK_ALERT_FREE_PCT` | Employee DM | 12 h |
 | Memory used > `MEMORY_ALERT_USED_PCT` | Employee DM | 12 h |
+
+The GPU-idle DM exists because the pilot light needs GPU **and** CPU **and**
+network to read idle: a resident remote-IDE server (Cursor / VS Code) keeps one
+core above `cpu_threshold` indefinitely, so an unused GPU box never auto-stops
+and, without this DM, its owner is never told. It notifies only — it never halts.
 
 Employee DMs are suppressed when `GPUMON_POLICY=SPOT` or `PAGE_EMPLOYEE=False`.
 

@@ -32,8 +32,10 @@ from mon_utils import (
     get_network_stats,
     get_per_core_cpu_utilization,
     get_policy_config,
+    gpu_idle_hours,
     seconds_elapsed,
     try_record_alert,
+    update_gpu_idle_since,
 )
 
 NAMESPACE = "GPU-metrics-with-team-tag"
@@ -185,6 +187,12 @@ def main() -> None:
 
     shutdown_cooldown_hours = float(os.getenv("SHUTDOWN_ALERT_COOLDOWN_HOURS", "4"))
 
+    # GPU-idle escalation: DM the owner when the GPU alone has been idle this
+    # long, even while CPU/network activity (typically a resident Cursor /
+    # VS Code remote server) keeps the pilot light off. 0 disables it.
+    gpu_idle_nag_hours        = float(os.getenv("GPU_IDLE_NAG_HOURS", "72"))
+    gpu_idle_nag_repeat_hours = float(os.getenv("GPU_IDLE_NAG_REPEAT_HOURS", "24"))
+
     # Slack DM client — None if secret not configured or unreachable
     slack_secret_id     = os.getenv("GPUMON_SLACK_SECRET_ID", "IT/SLACK_BOT_TOKEN")
     slack_secret_region = os.getenv("GPUMON_SLACK_SECRET_REGION", os.getenv("GPUMON_SECRET_REGION", "eu-west-1"))
@@ -194,6 +202,9 @@ def main() -> None:
     alarm_pilot_light = 0
     network_tripped   = 0
     network: float    = 99.0
+    # In-memory on purpose: a container restart (rare — only on a repo update)
+    # resets the streak, which merely delays the nag. Conservative by design.
+    gpu_idle_since: float | None = None
 
     loop_count = 0
     try:
@@ -294,6 +305,33 @@ def main() -> None:
                         alarm_pilot_light = 0
             else:
                 alarm_pilot_light = 0
+
+            # ── GPU-idle escalation (DM only — never halts) ──────────────────
+            # Watches the GPU signal alone, so an owner still hears about a box
+            # whose CPU/network activity (a resident IDE remote server, a stuck
+            # dataloader) keeps the pilot light off forever. Gated on
+            # restart_backoff like the pilot, so SUSPEND and fresh boots are
+            # honoured.
+            if gpu_idle_nag_hours > 0 and seconds >= restart_backoff:
+                now_ts = current_time.timestamp()
+                gpu_idle_since = update_gpu_idle_since(
+                    gpu_idle_since, average_gpu_util, gpu_threshold, gpu_query_failed, now_ts
+                )
+                idle_hours = gpu_idle_hours(gpu_idle_since, now_ts)
+                if (
+                    idle_hours >= gpu_idle_nag_hours
+                    and dm_client
+                    and try_record_alert("gpu_idle_nag", gpu_idle_nag_repeat_hours)
+                ):
+                    print(f"gpu-idle nag: GPU idle {idle_hours:.1f}h, DMing {emp_name}")
+                    dm_client.send_dm(
+                        emp_name,
+                        f":zzz: Your instance *{instance_name}* has done no GPU work for "
+                        f"*{idle_hours / 24:.1f} days*, but background CPU/network activity "
+                        f"(often a Cursor / VS Code remote server left connected) is keeping "
+                        f"it from the idle auto-stop. If you are done with it, please stop "
+                        f"the instance or close the remote session — it is billing every hour.",
+                    )
 
             # ── Log & push (reuse captured results — no second NVML query) ──
             for i, (util_i, gpu_util_i, mem_util_i, pow_draw_i, temp_i) in enumerate(gpu_results):

@@ -236,6 +236,43 @@ def try_record_alert(key: str, cooldown_hours: float) -> bool:
         return False
 
 
+# ── GPU-idle escalation ───────────────────────────────────────────────────────
+# The pilot light needs GPU AND CPU AND network to read idle, so a resident
+# remote-IDE server (cursor-server / vscode-server keeps one core above
+# cpu_threshold indefinitely) makes an unused GPU box immortal: halt_it.sh
+# never fires, and neither does the "scheduled to shut down" DM — the owner is
+# never told. These helpers track the GPU signal ALONE so gpumon.py can DM the
+# owner once the GPU has been idle for days. Notification only, never a halt.
+
+
+def update_gpu_idle_since(
+    idle_since: float | None,
+    average_gpu_util: float,
+    gpu_threshold: float,
+    gpu_query_failed: bool,
+    now: float,
+) -> float | None:
+    """Advance the GPU-idle streak; returns the streak's start time or None.
+
+    Starts the streak when the GPU first reads idle, preserves the original
+    start while it stays idle, and resets on activity — or on a failed GPU
+    query, because "unknown" must never count toward an escalation (the same
+    fail-safe rule the pilot light follows).
+    """
+    if gpu_query_failed:
+        return None
+    if round(average_gpu_util) <= gpu_threshold:
+        return idle_since if idle_since is not None else now
+    return None
+
+
+def gpu_idle_hours(idle_since: float | None, now: float) -> float:
+    """Length of the current GPU-idle streak in hours (0.0 when no streak)."""
+    if idle_since is None:
+        return 0.0
+    return max(0.0, (now - idle_since) / 3600.0)
+
+
 # ── Slack DM client factory ───────────────────────────────────────────────────
 
 def fetch_slack_bot_token(secret_id: str, secret_region: str) -> str | None:
