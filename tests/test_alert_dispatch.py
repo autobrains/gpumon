@@ -79,6 +79,20 @@ class TestSendAlertDm:
         assert send_alert_dm(dm, "shutdown_alert", 4.0, "paul", "a") is True
         assert send_alert_dm(dm, "gpu_idle_nag", 24.0, "paul", "b") is True
 
+    def test_cooldown_shorter_than_retry_floor_still_gates_to_floor(self, clock):
+        # Pathological config (e.g. ALERT_COOLDOWN_HOURS=0.1 for testing): the
+        # backdated timestamp lands in the future, but the algebra cancels out —
+        # the retry is gated to exactly the floor, not locked out indefinitely.
+        dm = MagicMock()
+        dm.send_dm.return_value = False
+        assert send_alert_dm(dm, "k", 0.1, "paul", "hi") is False
+        clock.advance((ALERT_RETRY_FLOOR_HOURS - 0.1) * HOUR)
+        assert send_alert_dm(dm, "k", 0.1, "paul", "hi") is False
+        assert dm.send_dm.call_count == 1
+        clock.advance(0.2 * HOUR)
+        dm.send_dm.return_value = True
+        assert send_alert_dm(dm, "k", 0.1, "paul", "hi") is True
+
 
 class TestFloatEnv:
     def test_unset_uses_default(self, monkeypatch):
