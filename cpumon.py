@@ -17,12 +17,14 @@ from mon_utils import (
     cleanup_old_logs,
     create_tag,
     fetch_instance_metadata,
+    float_env,
     get_instance_tags,
     get_network_stats,
     get_per_core_cpu_utilization,
     get_policy_config,
+    resolve_dm_recipient,
     seconds_elapsed,
-    try_record_alert,
+    send_alert_dm,
 )
 
 NAMESPACE = "CPU-metrics"
@@ -103,6 +105,9 @@ def main() -> None:
     instance_name = tags.get("Name", "NO_NAME_TAG")
     team          = tags.get("Team", "NO_TAG")
     emp_name      = tags.get("Employee", "NO_TAG")
+    # The shutdown notice goes to whoever launched the box (StartedBy),
+    # falling back to the Employee owner when the tag is empty or missing.
+    dm_recipient  = resolve_dm_recipient(tags)
     policy        = tags.get("GPUMON_POLICY")
     if policy is None:
         policy = "STANDARD"
@@ -122,7 +127,7 @@ def main() -> None:
     network_threshold = cfg["network_threshold"]
     shutdown_eta      = cfg["shutdown_eta"]
 
-    shutdown_cooldown_hours = float(os.getenv("SHUTDOWN_ALERT_COOLDOWN_HOURS", "4"))
+    shutdown_cooldown_hours = float_env("SHUTDOWN_ALERT_COOLDOWN_HOURS", 4.0)
 
     # Slack DM client — None if secret not configured or unreachable
     slack_secret_id     = os.getenv("GPUMON_SLACK_SECRET_ID", "IT/SLACK_BOT_TOKEN")
@@ -152,6 +157,12 @@ def main() -> None:
                 # follow them so CW dimensions and DMs track the current owner.
                 team     = fresh_tags.get("Team", team)
                 emp_name = fresh_tags.get("Employee", emp_name)
+                # Keep the last known recipient if both tags are momentarily
+                # absent (plausible mid-retag) rather than regressing every
+                # DM to the Slack fallback account.
+                refreshed_recipient = resolve_dm_recipient(fresh_tags)
+                if refreshed_recipient != "NO_TAG":
+                    dm_recipient = refreshed_recipient
             except Exception as exc:
                 print(f"policy refresh error: {exc}")
 
@@ -186,12 +197,12 @@ def main() -> None:
             if not cpu_util_tripped and network <= network_threshold:
                 if alarm_pilot_light == 0:
                     alarm_pilot_light = 1
-                    if dm_client and try_record_alert("shutdown_alert", shutdown_cooldown_hours):
-                        dm_client.send_dm(
-                            emp_name,
-                            f":alarm_clock: Your instance *{instance_name}* appears idle "
-                            f"and is scheduled to shut down in {shutdown_eta}.",
-                        )
+                    send_alert_dm(
+                        dm_client, "shutdown_alert", shutdown_cooldown_hours,
+                        dm_recipient,
+                        f":alarm_clock: Your instance *{instance_name}* appears idle "
+                        f"and is scheduled to shut down in {shutdown_eta}.",
+                    )
             else:
                 if alarm_pilot_light == 1:
                     alarm_pilot_light = 0

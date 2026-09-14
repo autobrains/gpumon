@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
-from time import sleep
+from time import monotonic, sleep
 
 import boto3
 import psutil
@@ -28,12 +28,16 @@ from mon_utils import (
     cleanup_old_logs,
     create_tag,
     fetch_instance_metadata,
+    float_env,
     get_instance_tags,
     get_network_stats,
     get_per_core_cpu_utilization,
     get_policy_config,
+    gpu_idle_hours,
+    resolve_dm_recipient,
     seconds_elapsed,
-    try_record_alert,
+    send_alert_dm,
+    update_gpu_idle_since,
 )
 
 NAMESPACE = "GPU-metrics-with-team-tag"
@@ -163,6 +167,10 @@ def main() -> None:
     instance_name = tags.get("Name", "NO_NAME_TAG")
     team          = tags.get("Team", "NO_TAG")
     emp_name      = tags.get("Employee", "NO_TAG")
+    # Idle-related DMs (shutdown notice, GPU-idle nag) go to whoever launched
+    # the box (StartedBy), falling back to the Employee owner when the tag is
+    # empty or missing.
+    dm_recipient = resolve_dm_recipient(tags)
     policy        = tags.get("GPUMON_POLICY")
     if policy is None:
         policy = "STANDARD"
@@ -183,7 +191,13 @@ def main() -> None:
     network_threshold = cfg["network_threshold"]
     shutdown_eta      = cfg["shutdown_eta"]
 
-    shutdown_cooldown_hours = float(os.getenv("SHUTDOWN_ALERT_COOLDOWN_HOURS", "4"))
+    shutdown_cooldown_hours = float_env("SHUTDOWN_ALERT_COOLDOWN_HOURS", 4.0)
+
+    # GPU-idle escalation: DM the owner when the GPU alone has been idle this
+    # long, even while CPU/network activity (typically a resident Cursor /
+    # VS Code remote server) keeps the pilot light off. 0 disables it.
+    gpu_idle_nag_hours        = float_env("GPU_IDLE_NAG_HOURS", 72.0)
+    gpu_idle_nag_repeat_hours = float_env("GPU_IDLE_NAG_REPEAT_HOURS", 24.0)
 
     # Slack DM client — None if secret not configured or unreachable
     slack_secret_id     = os.getenv("GPUMON_SLACK_SECRET_ID", "IT/SLACK_BOT_TOKEN")
@@ -194,6 +208,9 @@ def main() -> None:
     alarm_pilot_light = 0
     network_tripped   = 0
     network: float    = 99.0
+    # In-memory on purpose: a container restart (rare — only on a repo update)
+    # resets the streak, which merely delays the nag. Conservative by design.
+    gpu_idle_since: float | None = None
 
     loop_count = 0
     try:
@@ -215,6 +232,12 @@ def main() -> None:
                     # follow them so CW dimensions and DMs track the current owner.
                     team     = fresh_tags.get("Team", team)
                     emp_name = fresh_tags.get("Employee", emp_name)
+                    # Keep the last known recipient if both tags are momentarily
+                    # absent (plausible mid-retag) rather than regressing every
+                    # DM to the Slack fallback account.
+                    refreshed_recipient = resolve_dm_recipient(fresh_tags)
+                    if refreshed_recipient != "NO_TAG":
+                        dm_recipient = refreshed_recipient
                 except Exception as exc:
                     print(f"policy refresh error: {exc}")
 
@@ -283,17 +306,44 @@ def main() -> None:
                 if round(average_gpu_util) <= gpu_threshold and not cpu_util_tripped and network <= network_threshold and not gpu_query_failed:
                     if alarm_pilot_light == 0:
                         alarm_pilot_light = 1
-                        if dm_client and try_record_alert("shutdown_alert", shutdown_cooldown_hours):
-                            dm_client.send_dm(
-                                emp_name,
-                                f":alarm_clock: Your instance *{instance_name}* appears idle "
-                                f"and is scheduled to shut down in {shutdown_eta}.",
-                            )
+                        send_alert_dm(
+                            dm_client, "shutdown_alert", shutdown_cooldown_hours,
+                            dm_recipient,
+                            f":alarm_clock: Your instance *{instance_name}* appears idle "
+                            f"and is scheduled to shut down in {shutdown_eta}.",
+                        )
                 else:
                     if alarm_pilot_light == 1:
                         alarm_pilot_light = 0
             else:
                 alarm_pilot_light = 0
+
+            # ── GPU-idle escalation (DM only — never halts) ──────────────────
+            # Watches the GPU signal alone, so an owner still hears about a box
+            # whose CPU/network activity (a resident IDE remote server, a stuck
+            # dataloader) keeps the pilot light off forever. Gated on
+            # restart_backoff like the pilot, so SUSPEND and fresh boots are
+            # honoured.
+            if gpu_idle_nag_hours > 0 and seconds >= restart_backoff:
+                # monotonic() is immune to NTP step corrections, which could
+                # otherwise instantly "age" the streak past the threshold.
+                now_ts = monotonic()
+                gpu_idle_since = update_gpu_idle_since(
+                    gpu_idle_since, average_gpu_util, gpu_threshold, gpu_query_failed, now_ts
+                )
+                idle_hours = gpu_idle_hours(gpu_idle_since, now_ts)
+                if idle_hours >= gpu_idle_nag_hours:
+                    sent = send_alert_dm(
+                        dm_client, "gpu_idle_nag", gpu_idle_nag_repeat_hours,
+                        dm_recipient,
+                        f":zzz: Your instance *{instance_name}* has done no GPU work for "
+                        f"*{idle_hours / 24:.1f} days*, but background CPU/network activity "
+                        f"(often a Cursor / VS Code remote server left connected) is keeping "
+                        f"it from the idle auto-stop. If you are done with it, please stop "
+                        f"the instance or close the remote session — it is billing every hour.",
+                    )
+                    if sent:
+                        print(f"gpu-idle nag: GPU idle {idle_hours:.1f}h, DMed {dm_recipient}")
 
             # ── Log & push (reuse captured results — no second NVML query) ──
             for i, (util_i, gpu_util_i, mem_util_i, pow_draw_i, temp_i) in enumerate(gpu_results):

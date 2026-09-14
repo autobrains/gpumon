@@ -19,8 +19,9 @@ from mon_utils import (
     build_slack_dm_client,
     cleanup_old_logs,
     fetch_instance_metadata,
+    float_env,
     get_instance_tags,
-    try_record_alert,
+    send_alert_dm,
 )
 
 NAMESPACE = "Host-metrics"
@@ -138,9 +139,9 @@ def main() -> None:
     page_employee = tags.get("PAGE_EMPLOYEE", "True").lower() != "false"
 
     # Alert thresholds from env (with defaults)
-    disk_alert_free_pct  = float(os.getenv("DISK_ALERT_FREE_PCT",    "10"))
-    mem_alert_used_pct   = float(os.getenv("MEMORY_ALERT_USED_PCT",  "90"))
-    alert_cooldown_hours = float(os.getenv("ALERT_COOLDOWN_HOURS",   "12"))
+    disk_alert_free_pct  = float_env("DISK_ALERT_FREE_PCT",   10.0)
+    mem_alert_used_pct   = float_env("MEMORY_ALERT_USED_PCT", 90.0)
+    alert_cooldown_hours = float_env("ALERT_COOLDOWN_HOURS",  12.0)
 
     # Slack DM client — None if secret not configured, unreachable, or PAGE_EMPLOYEE=false
     slack_secret_id     = os.getenv("GPUMON_SLACK_SECRET_ID", "IT/SLACK_BOT_TOKEN")
@@ -204,15 +205,17 @@ def main() -> None:
 
             # ── Employee DM alerts (disk & memory only) ──────────────────────
             if dm_client:
-                if disk_free_pct < disk_alert_free_pct and try_record_alert("disk_alert", alert_cooldown_hours):
-                    dm_client.send_dm(
+                if disk_free_pct < disk_alert_free_pct:
+                    send_alert_dm(
+                        dm_client, "disk_alert", alert_cooldown_hours,
                         emp_name,
                         f":warning: Disk space low on *{instance_name}*: "
                         f"only {disk_free_pct:.1f}% free ({disk_free_gb} GB remaining).",
                     )
 
-                if mem_used_pct > mem_alert_used_pct and try_record_alert("memory_alert", alert_cooldown_hours):
-                    dm_client.send_dm(
+                if mem_used_pct > mem_alert_used_pct:
+                    send_alert_dm(
+                        dm_client, "memory_alert", alert_cooldown_hours,
                         emp_name,
                         f":warning: Memory pressure on *{instance_name}*: "
                         f"{mem_used_pct:.1f}% in use. "

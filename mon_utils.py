@@ -195,6 +195,26 @@ def cleanup_old_logs(prefix: str, max_age_hours: int = 48) -> None:
             pass
 
 
+# ── Env parsing ───────────────────────────────────────────────────────────────
+
+
+def float_env(name: str, default: float) -> float:
+    """os.getenv as float, tolerating unset, empty, or malformed values.
+
+    A monitoring daemon must not die at startup over a typo'd threshold —
+    os.getenv's default only applies when the variable is unset, so an empty
+    string from a templated env file would otherwise raise ValueError.
+    """
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        print(f"env {name}={raw!r} is not a number — using default {default}")
+        return default
+
+
 # ── Alert rate limiting ───────────────────────────────────────────────────────
 # State persisted to /tmp so it survives container restarts via /tmp:/tmp mount.
 # The lock file serialises concurrent access between gpumon and cpumon so the
@@ -234,6 +254,118 @@ def try_record_alert(key: str, cooldown_hours: float) -> bool:
     except OSError as exc:
         print(f"try_record_alert error: {exc}")
         return False
+
+
+# How soon a failed DM may be retried. Short enough that the alert is not
+# silently muted for its full cooldown, long enough not to hammer Slack every
+# 10s loop tick during an outage.
+ALERT_RETRY_FLOOR_HOURS = 0.5
+
+
+def reduce_alert_cooldown(key: str, cooldown_hours: float, retry_hours: float) -> None:
+    """Backdate a recorded alert so the next attempt is allowed after
+    retry_hours instead of the full cooldown_hours window."""
+    try:
+        with open(_ALERT_LOCK_FILE, "w") as lock_fh:
+            fcntl.flock(lock_fh, fcntl.LOCK_EX)
+            try:
+                with open(_ALERT_STATE_FILE) as fh:
+                    state = json.load(fh)
+            except (FileNotFoundError, json.JSONDecodeError):
+                state = {}
+            state[key] = time.time() - (cooldown_hours - retry_hours) * 3600
+            tmp = _ALERT_STATE_FILE + ".tmp"
+            with open(tmp, "w") as fh:
+                json.dump(state, fh)
+            os.replace(tmp, _ALERT_STATE_FILE)
+    except OSError as exc:
+        print(f"reduce_alert_cooldown error: {exc}")
+
+
+def send_alert_dm(
+    dm_client: "SlackDMClient | None",
+    key: str,
+    cooldown_hours: float,
+    recipient: str,
+    message: str,
+) -> bool:
+    """Cooldown-gated DM that burns the full cooldown only on delivery.
+
+    Atomically claims the cooldown slot (try_record_alert), then attempts the
+    DM. On failure — send_dm returning False or raising — the claim is shrunk
+    to ALERT_RETRY_FLOOR_HOURS so the alert retries soon instead of being
+    silently muted for the whole window. Never raises: a DM failure must not
+    take the caller's monitoring loop down.
+    """
+    if dm_client is None:
+        return False
+    if not try_record_alert(key, cooldown_hours):
+        return False
+    try:
+        if dm_client.send_dm(recipient, message):
+            return True
+    except Exception as exc:
+        print(f"send_alert_dm('{key}') unexpected error: {exc}")
+    print(
+        f"send_alert_dm('{key}'): DM to '{recipient}' failed — "
+        f"retrying in {ALERT_RETRY_FLOOR_HOURS}h"
+    )
+    reduce_alert_cooldown(key, cooldown_hours, ALERT_RETRY_FLOOR_HOURS)
+    return False
+
+
+# ── GPU-idle escalation ───────────────────────────────────────────────────────
+# The pilot light needs GPU AND CPU AND network to read idle, so a resident
+# remote-IDE server (cursor-server / vscode-server keeps one core above
+# cpu_threshold indefinitely) makes an unused GPU box immortal: halt_it.sh
+# never fires, and neither does the "scheduled to shut down" DM — the owner is
+# never told. These helpers track the GPU signal ALONE so gpumon.py can DM the
+# owner once the GPU has been idle for days. Notification only, never a halt.
+
+
+def update_gpu_idle_since(
+    idle_since: float | None,
+    average_gpu_util: float,
+    gpu_threshold: float,
+    gpu_query_failed: bool,
+    now: float,
+) -> float | None:
+    """Advance the GPU-idle streak; returns the streak's start time or None.
+
+    Starts the streak when the GPU first reads idle, preserves the original
+    start while it stays idle, and resets on activity — or on a failed GPU
+    query, because "unknown" must never count toward an escalation (the same
+    fail-safe rule the pilot light follows).
+
+    Timestamps are caller-supplied and only ever compared to each other, so
+    any steadily increasing clock works — gpumon passes time.monotonic() so
+    NTP step corrections cannot distort the streak.
+    """
+    if gpu_query_failed:
+        return None
+    if round(average_gpu_util) <= gpu_threshold:
+        return idle_since if idle_since is not None else now
+    return None
+
+
+def gpu_idle_hours(idle_since: float | None, now: float) -> float:
+    """Length of the current GPU-idle streak in hours (0.0 when no streak)."""
+    if idle_since is None:
+        return 0.0
+    return max(0.0, (now - idle_since) / 3600.0)
+
+
+def resolve_dm_recipient(tags: dict[str, str]) -> str:
+    """Who idle-related DMs go to: StartedBy when set, else Employee.
+
+    StartedBy is whoever actually launched the instance, which can differ from
+    the Employee cost-tag owner — and they are the one who can act on the
+    alert (stop the box, or close the remote-IDE session keeping it alive).
+    """
+    started_by = (tags.get("StartedBy") or "").strip()
+    if started_by:
+        return started_by
+    return (tags.get("Employee") or "").strip() or "NO_TAG"
 
 
 # ── Slack DM client factory ───────────────────────────────────────────────────
