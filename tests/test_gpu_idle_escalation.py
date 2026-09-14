@@ -3,16 +3,8 @@
 # the negative property: anything ambiguous (a failed GPU query, activity above
 # threshold) must reset the streak, never extend it.
 
-import sys
-import types
-from unittest.mock import MagicMock
-
-# mon_utils imports boto3/psutil at module level; neither is needed by the
-# functions under test, so stub them out rather than requiring the runtime deps.
-sys.modules.setdefault("boto3", MagicMock())
-sys.modules.setdefault("psutil", MagicMock())
-
-from mon_utils import (  # noqa: E402
+# boto3/psutil stubbing (when not installed) happens in conftest.py.
+from mon_utils import (
     gpu_idle_hours,
     resolve_dm_recipient,
     update_gpu_idle_since,

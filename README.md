@@ -191,6 +191,8 @@ Idle-related DMs (the shutdown notice and the GPU-idle nag) go to the
 the alert; when that tag is empty or missing they fall back to `Employee`.
 
 Employee DMs are suppressed when `GPUMON_POLICY=SPOT` or `PAGE_EMPLOYEE=False`.
+A DM that fails to deliver (Slack outage, unresolvable user) does not burn the
+full cooldown — it is retried after 30 minutes.
 
 ---
 

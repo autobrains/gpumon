@@ -132,3 +132,8 @@ class SlackDMClient:
         except SlackApiError as exc:
             print(f"slack_dm: send_dm('{employee}') failed: {exc.response['error']}")
             return False
+        except Exception as exc:
+            # Transport-level failures (DNS, refused connection, timeout) are
+            # not SlackApiError — a DM must never take a monitoring loop down.
+            print(f"slack_dm: send_dm('{employee}') failed: {exc}")
+            return False
