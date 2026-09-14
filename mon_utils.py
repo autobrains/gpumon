@@ -273,6 +273,19 @@ def gpu_idle_hours(idle_since: float | None, now: float) -> float:
     return max(0.0, (now - idle_since) / 3600.0)
 
 
+def resolve_gpu_idle_dm_recipient(tags: dict) -> str:
+    """Who the GPU-idle nag DMs: StartedBy when set, else Employee.
+
+    StartedBy is whoever actually launched the instance, which can differ from
+    the Employee cost-tag owner — and they are the one holding the remote-IDE
+    session that keeps the box alive.
+    """
+    started_by = (tags.get("StartedBy") or "").strip()
+    if started_by:
+        return started_by
+    return tags.get("Employee", "NO_TAG")
+
+
 # ── Slack DM client factory ───────────────────────────────────────────────────
 
 def fetch_slack_bot_token(secret_id: str, secret_region: str) -> str | None:

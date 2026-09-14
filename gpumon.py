@@ -33,6 +33,7 @@ from mon_utils import (
     get_per_core_cpu_utilization,
     get_policy_config,
     gpu_idle_hours,
+    resolve_gpu_idle_dm_recipient,
     seconds_elapsed,
     try_record_alert,
     update_gpu_idle_since,
@@ -165,6 +166,9 @@ def main() -> None:
     instance_name = tags.get("Name", "NO_NAME_TAG")
     team          = tags.get("Team", "NO_TAG")
     emp_name      = tags.get("Employee", "NO_TAG")
+    # The GPU-idle nag goes to whoever launched the box (StartedBy), falling
+    # back to the Employee owner when the tag is empty or missing.
+    gpu_idle_dm_to = resolve_gpu_idle_dm_recipient(tags)
     policy        = tags.get("GPUMON_POLICY")
     if policy is None:
         policy = "STANDARD"
@@ -226,6 +230,7 @@ def main() -> None:
                     # follow them so CW dimensions and DMs track the current owner.
                     team     = fresh_tags.get("Team", team)
                     emp_name = fresh_tags.get("Employee", emp_name)
+                    gpu_idle_dm_to = resolve_gpu_idle_dm_recipient(fresh_tags)
                 except Exception as exc:
                     print(f"policy refresh error: {exc}")
 
@@ -323,9 +328,9 @@ def main() -> None:
                     and dm_client
                     and try_record_alert("gpu_idle_nag", gpu_idle_nag_repeat_hours)
                 ):
-                    print(f"gpu-idle nag: GPU idle {idle_hours:.1f}h, DMing {emp_name}")
+                    print(f"gpu-idle nag: GPU idle {idle_hours:.1f}h, DMing {gpu_idle_dm_to}")
                     dm_client.send_dm(
-                        emp_name,
+                        gpu_idle_dm_to,
                         f":zzz: Your instance *{instance_name}* has done no GPU work for "
                         f"*{idle_hours / 24:.1f} days*, but background CPU/network activity "
                         f"(often a Cursor / VS Code remote server left connected) is keeping "

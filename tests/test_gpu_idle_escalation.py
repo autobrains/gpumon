@@ -12,7 +12,11 @@ from unittest.mock import MagicMock
 sys.modules.setdefault("boto3", MagicMock())
 sys.modules.setdefault("psutil", MagicMock())
 
-from mon_utils import gpu_idle_hours, update_gpu_idle_since  # noqa: E402
+from mon_utils import (  # noqa: E402
+    gpu_idle_hours,
+    resolve_gpu_idle_dm_recipient,
+    update_gpu_idle_since,
+)
 
 T0 = 1_000_000.0
 HOUR = 3600.0
@@ -57,3 +61,23 @@ class TestGpuIdleHours:
 
     def test_clock_skew_never_goes_negative(self):
         assert gpu_idle_hours(T0, T0 - HOUR) == 0.0
+
+
+class TestResolveGpuIdleDmRecipient:
+    def test_started_by_wins_when_set(self):
+        tags = {"StartedBy": "jane.doe", "Employee": "moritz.klischat"}
+        assert resolve_gpu_idle_dm_recipient(tags) == "jane.doe"
+
+    def test_falls_back_to_employee_when_started_by_missing(self):
+        assert resolve_gpu_idle_dm_recipient({"Employee": "moritz.klischat"}) == "moritz.klischat"
+
+    def test_falls_back_to_employee_when_started_by_empty(self):
+        tags = {"StartedBy": "", "Employee": "moritz.klischat"}
+        assert resolve_gpu_idle_dm_recipient(tags) == "moritz.klischat"
+
+    def test_whitespace_only_started_by_counts_as_empty(self):
+        tags = {"StartedBy": "   ", "Employee": "moritz.klischat"}
+        assert resolve_gpu_idle_dm_recipient(tags) == "moritz.klischat"
+
+    def test_no_tags_at_all_yields_sentinel(self):
+        assert resolve_gpu_idle_dm_recipient({}) == "NO_TAG"
