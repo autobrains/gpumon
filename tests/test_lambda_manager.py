@@ -254,3 +254,13 @@ def test_fix_both_steps_genuinely_failed_marks_not_fixed(monkeypatch):
     queue(monkeypatch, [ok("yes"), ok(""), ok("inactive"), BROKEN_INVOCATION])
     lm.handle_fix(ec2, object(), INSTANCE)
     assert ec2.last_tag == "NOT_FIXED"
+
+
+def test_regions_cover_the_buffet_eu_regions_once():
+    # Buffet launches GPUMON-tagged boxes in these since 2026-11-05; a box in an
+    # unswept region would never get gpumon installed or its idle-stop enforced.
+    eu = {"eu-west-1", "eu-central-1", "eu-north-1", "eu-west-2", "eu-south-2",
+          "eu-west-3", "eu-central-2", "eu-south-1"}
+    assert eu <= set(lm.REGIONS)
+    assert "us-east-1" in lm.REGIONS
+    assert len(lm.REGIONS) == len(set(lm.REGIONS))

@@ -6,7 +6,12 @@ from botocore.exceptions import ClientError
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-REGIONS = ["eu-west-1", "eu-central-1", "us-east-1"]
+# Swept in this order every invocation. The six EU regions after the first three were
+# opened for Buffet on 2026-11-05; an empty region costs one DescribeInstances call.
+REGIONS = [
+    "eu-west-1", "eu-central-1", "us-east-1",
+    "eu-north-1", "eu-west-2", "eu-south-2", "eu-west-3", "eu-central-2", "eu-south-1",
+]
 IAM_ROLE_NAME  = "EC2IAMRole"
 TAG_KEY        = "GPUMON"
 BRANCH_TAG_KEY = "GPUMON_BRANCH"       # optional per-instance branch override
