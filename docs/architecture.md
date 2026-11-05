@@ -134,7 +134,7 @@ Runs on the **host** crontab, not inside the container. Reads from `/tmp` which 
 
 Fleet manager Lambda. No persistent state — everything is derived from EC2 tags.
 
-- Sweeps all configured `REGIONS` on every invocation.
+- Sweeps all configured `REGIONS` on every invocation: eu-west-1, eu-central-1, us-east-1, and since 2026-11-05 the six EU regions Buffet launches in (eu-north-1, eu-west-2, eu-south-2, eu-west-3, eu-central-2, eu-south-1).
 - Dispatches by `GPUMON` tag value to handler functions.
 - All SSM commands are sent as `AWS-RunShellScript` and polled until terminal status.
 - Progressive fix: step 1 (`git pull` + `docker compose up -d --build`) before step 2 (full `autoinstall.sh`).
